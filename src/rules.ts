@@ -87,16 +87,25 @@ export const SS57_HANDICAP_SESSIONS = 3
 export const SS61_W2_START = 12 * 60 + 30
 export const SS61_W3_START = 15 * 60 + 0
 export const SS61_W3_END   = 15 * 60 + 58
-export const SS61_W2_SIG = 1.30, SS61_W2_RV = 1.17
+/* SS61 W2 (lunch) recalibrated. `ss61RvProxy` compares recent price ranges to the
+   SESSION average, and that average is dominated by the open. Lunch ranges compress,
+   so 1.17 was asking 1pm to be choppier than 9:30 — unreachable, and it has no
+   bypass, so ORB and break-retest died on it too. 0.65 asks lunch to beat a normal
+   lunch, which is what the sheet intended. */
+export const SS61_W2_SIG = 1.30, SS61_W2_RV = 0.65
 export const SS61_W3_SIG = 1.15, SS61_W3_RV = 1.10
 export const SS61_A2_STRIKES = 2
 
 export const SS62_THETA_ALGO  = 0.70, SS62_THETA_BEAST = 0.80
 export const SS62_ADJ_ALGO    = 2,    SS62_ADJ_BEAST   = 1
 export const SS62_RVOL_EDGE   = 0.85
-export const SS62_RVOL_NOON   = 1.20, SS62_RVOL_NOON_BEAST = 1.35
+/* Same baseline error, different measurement. RVOL here is recent per-minute volume
+   vs the session average, not a trailing 20-day same-window average. A typical lunch
+   runs about half the session rate, so the sheet's "1.20x a normal lunch" is ~0.60
+   in these units. */
+export const SS62_RVOL_NOON   = 0.60, SS62_RVOL_NOON_BEAST = 0.68
 export const SS62_WARMUP_MIN  = 30
-export const SS62_LANE1_BUMP  = 0.15
+export const SS62_LANE1_BUMP  = 0.08   // rescaled: 0.15 was ~18% of a 0.85 bar, would be 25% of 0.60
 export const SS62_LANE1_AFTER = 2
 
 export const SS58_BAND_LO = 0.004, SS58_BAND_HI = 0.006

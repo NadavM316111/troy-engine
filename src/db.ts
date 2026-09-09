@@ -12,6 +12,22 @@ import { emptyRefs } from './types.js'
 
 const sql = neon(process.env.DATABASE_URL!)
 
+/* Neon's free tier autosuspends and drops connections. Without a retry, a dropped
+   write in saveUserTick meant the engine computed a decision — possibly a fill —
+   and then silently lost it, leaving cash and positions out of sync with what
+   actually happened. Three of those showed up in the first week. */
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn() } catch (e) {
+      lastErr = e
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, 250 * 2 ** i))
+    }
+  }
+  console.error(`[error] ${label} failed after ${attempts} attempts`, lastErr)
+  throw lastErr
+}
+
 export async function activeUsers(): Promise<UserRow[]> {
   const rows = await sql`
     SELECT user_id, email, display_name, active, email_enabled, state
@@ -26,24 +42,24 @@ export async function loadRefs(userId: string): Promise<EngineRefs> {
 }
 
 export async function saveUserTick(userId: string, state: PortfolioState, refs: EngineRefs, trades: Trade[], day: number, row: DaySummary | null) {
-  await sql`
+  await withRetry('saveUserTick.portfolio', () => sql`
     UPDATE portfolios SET state = ${JSON.stringify(state)}::jsonb, updated_at = now()
-    WHERE user_id = ${userId}`
-  await sql`
+    WHERE user_id = ${userId}`)
+  await withRetry('saveUserTick.refs', () => sql`
     INSERT INTO engine_state (user_id, refs, updated_at) VALUES (${userId}, ${JSON.stringify(refs)}::jsonb, now())
-    ON CONFLICT (user_id) DO UPDATE SET refs = EXCLUDED.refs, updated_at = now()`
+    ON CONFLICT (user_id) DO UPDATE SET refs = EXCLUDED.refs, updated_at = now()`)
   for (const t of trades) {
-    await sql`
+    await withRetry(`saveUserTick.trade.${t.ticker}`, () => sql`
       INSERT INTO trades (id, user_id, day, ticker, action, shares, price, total, pnl, signal, sleeve, conviction, reasoning, ts)
       VALUES (${t.id}, ${userId}, ${day}, ${t.ticker}, ${t.action}, ${t.shares}, ${t.price}, ${t.total},
               ${t.pnl ?? null}, ${t.signal ?? null}, ${t.sleeve ?? null}, ${t.conviction}, ${t.reasoning}, to_timestamp(${t.timestamp / 1000}))
-      ON CONFLICT (id) DO NOTHING`
+      ON CONFLICT (id) DO NOTHING`)
   }
   if (row) {
-    await sql`
+    await withRetry('saveUserTick.dailyLog', () => sql`
       INSERT INTO daily_log (user_id, day, date, row, updated_at)
       VALUES (${userId}, ${row.day}, ${row.date}::date, ${JSON.stringify(row)}::jsonb, now())
-      ON CONFLICT (user_id, day) DO UPDATE SET row = EXCLUDED.row, updated_at = now()`
+      ON CONFLICT (user_id, day) DO UPDATE SET row = EXCLUDED.row, updated_at = now()`)
   }
 }
 
@@ -59,10 +75,11 @@ export async function saveBars(bars: Record<string, number[]>, day: number) {
   const entries = Object.entries(bars)
   for (let i = 0; i < entries.length; i += 50) {
     const chunk = entries.slice(i, i + 50)
-    await Promise.all(chunk.map(([ticker, arr]) => sql`
+    await Promise.all(chunk.map(([ticker, arr]) => withRetry(`saveBars.${ticker}`, () => sql`
       INSERT INTO bar_history (ticker, bars, session_day, updated_at)
       VALUES (${ticker}, ${JSON.stringify(arr)}::jsonb, ${day}, now())
-      ON CONFLICT (ticker) DO UPDATE SET bars = EXCLUDED.bars, session_day = EXCLUDED.session_day, updated_at = now()`))
+      ON CONFLICT (ticker) DO UPDATE SET bars = EXCLUDED.bars, session_day = EXCLUDED.session_day, updated_at = now()`)
+      .catch(() => { /* bar history is rebuildable; never fail a tick over it */ })))
   }
 }
 
@@ -79,11 +96,11 @@ export async function log(level: 'info'|'warn'|'error', message: string, detail?
 /* Single-writer lock. Railway can briefly run two instances across a deploy;
    two engines trading the same book would double-fill and corrupt cash. */
 export async function claimLock(holder: string): Promise<boolean> {
-  const rows = await sql`
+  const rows = await withRetry('claimLock', () => sql`
     INSERT INTO engine_lock (id, holder, heartbeat) VALUES (1, ${holder}, now())
     ON CONFLICT (id) DO UPDATE SET holder = ${holder}, heartbeat = now()
     WHERE engine_lock.holder = ${holder} OR engine_lock.heartbeat < now() - interval '90 seconds'
-    RETURNING holder` as any[]
+    RETURNING holder`) as any[]
   return rows.length > 0
 }
 

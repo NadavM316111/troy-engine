@@ -33,6 +33,12 @@ export interface EngineOutput {
   newTrades: Trade[]
   execLog: string[]
   notifications: string[]
+  /* Why entries were rejected this tick, keyed by reason. Without this the only
+     visible symptom of a too-tight filter is "no trades", which is also what a
+     genuinely quiet market looks like. They are not the same thing and this is
+     the only way to tell them apart. */
+  rejects: Record<string, number>
+  gate: { maxConcurrent: number; held: number; scanOnly: boolean; noTrade: boolean; cautiousRed: boolean; window: string; spy: number; breadth: number }
 }
 
 function genId() { return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}` }
@@ -44,8 +50,10 @@ export function runEngine(input: EngineInput): EngineOutput {
   const notifications: string[] = []
   const execLog: string[] = []
   const newTrades: Trade[] = []
+  const rejects: Record<string, number> = {}
+  const rej = (k: string) => { rejects[k] = (rejects[k] ?? 0) + 1 }
 
-  if (cp.withdrawn) return { state: cp, refs, newTrades, execLog, notifications }
+  if (cp.withdrawn) return { state: cp, refs, newTrades, execLog, notifications, rejects, gate: { maxConcurrent: 0, held: 0, scanOnly: false, noTrade: false, cautiousRed: false, window: 'n/a', spy: 0, breadth: 0 } }
 
   let positions: Position[] = JSON.parse(JSON.stringify(cp.positions))
   let cash = cp.cash
@@ -359,6 +367,12 @@ export function runEngine(input: EngineInput): EngineOutput {
   }
 
   /* ── Risk allocation (entries) ── */
+  if (marketHalted)    rej('BLOCKED_marketHalt')
+  if (noNewEntry)      rej('BLOCKED_eodCutoff')
+  if (inFlatten)       rej('BLOCKED_flatten')
+  if (scanOnly)        rej('BLOCKED_scanOnlyBefore1030')
+  if (noTradeRoute)    rej('BLOCKED_fullRedStandDown')
+  if (universeDefect)  rej('BLOCKED_universeDefect')
   if (!marketHalted && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && !universeDefect) {
     const fullWatch = cp.aiPicksStocks ? [...new Set([...cp.stocks, ...R.STOCK_LIBRARY.map(s => s.sym)])] : cp.stocks
     const watchlist = inBeastRoute ? (roster.length ? roster : fullWatch) : fullWatch
@@ -367,26 +381,27 @@ export function runEngine(input: EngineInput): EngineOutput {
     let openRisk = riskPosns.reduce((s,p)=>s+Math.max(0,(p.currentPrice-p.stopLevel)*p.shares),0)
     const perNameCapPct = beast ? R.BEAST_PER_NAME_CAP_PCT : cp.zangerMode ? R.ZANGER_PER_NAME_CAP_PCT : Math.max(6, 100 / maxConcurrent)
 
+    if (riskPosns.length >= maxConcurrent) rej('maxConcurrentReached')
     if (riskPosns.length < maxConcurrent) {
       for (const sym of watchlist) {
         if (positions.find(p => p.ticker === sym)) continue
         if (positions.filter(p => !p.isSafe).length >= maxConcurrent) break
         const cdWindow = beast ? (refs.gStock.includes(sym) ? 0 : R.SS58_REENTRY_MS) : R.SYMBOL_COOLDOWN_MS
-        if (Date.now() - (refs.cooldown[sym] ?? 0) < cdWindow) continue
-        if ((refs.fkLock[sym] ?? 0) > Date.now()) continue
-        if ((refs.handicap[sym] ?? 0) > Date.now()) continue
-        if ((refs.a2Strike[sym] ?? 0) >= R.SS61_A2_STRIKES && !beast) continue
-        const scr = refs.scratch[sym]; if (scr && scr.frozenUntil > Date.now()) continue
-        const q = quotes[sym]; if (!q || q.price <= 0) continue
-        if (q.changePct < (beast ? -5 : -1.5)) continue
-        if (R.SS54_EXCLUDE.includes(sym)) continue
-        const b = bars[sym] || []; if (b.length < 4) continue
+        if (Date.now() - (refs.cooldown[sym] ?? 0) < cdWindow) { rej('cooldown'); continue }
+        if ((refs.fkLock[sym] ?? 0) > Date.now()) { rej('fallingKnifeLock'); continue }
+        if ((refs.handicap[sym] ?? 0) > Date.now()) { rej('handicapped'); continue }
+        if ((refs.a2Strike[sym] ?? 0) >= R.SS61_A2_STRIKES && !beast) { rej('a2Strikes'); continue }
+        const scr = refs.scratch[sym]; if (scr && scr.frozenUntil > Date.now()) { rej('scratchFrozen'); continue }
+        const q = quotes[sym]; if (!q || q.price <= 0) { rej('noQuote'); continue }
+        if (q.changePct < (beast ? -5 : -1.5)) { rej('tooRed'); continue }
+        if (R.SS54_EXCLUDE.includes(sym)) { rej('isIndexETF'); continue }
+        const b = bars[sym] || []; if (b.length < 4) { rej('insufficientBars'); continue }
 
         const sector = R.sectorOf(sym)
-        if (!R.ss54SectorGreen(sector, quotes, spyChange)) continue
-        if ((q.changePct - spyChange) < R.SS54_SYMBOL_RS_FLOOR) continue
+        if (!R.ss54SectorGreen(sector, quotes, spyChange)) { rej('sectorNotGreen'); continue }
+        if ((q.changePct - spyChange) < R.SS54_SYMBOL_RS_FLOOR) { rej('rsBelowSpy'); continue }
         const clusterPos = positions.filter(p => !p.isSafe && p.sector === sector)
-        if (!beast && clusterPos.length >= R.CLUSTER_MAX_POS) continue
+        if (!beast && clusterPos.length >= R.CLUSTER_MAX_POS) { rej('sectorClusterFull'); continue }
 
         const freshTotal = cash + positions.reduce((s,p)=>s+p.value,0)
         const freshCashPct = freshTotal > 0 ? (cash / freshTotal) * 100 : 100
@@ -414,11 +429,11 @@ export function runEngine(input: EngineInput): EngineOutput {
           if (s.action === 'BUY' && s.confidence >= (beast ? R.BEAST_BASELINE_CONF : 63)) { entryBuy = true; sigName = s.signal; reason = s.reasoning; allocPct = s.allocPct }
         }
 
-        if (!entryBuy) continue
+        if (!entryBuy) { rej('noSignal'); continue }
 
         const g62 = R.ss62Gate(q, q.price, intraWindow, beast, etMin, refs.ss62Bump[sym] ?? 0)
         if (!g62.pass) {
-          refs.ss62Count++
+          rej(`ss62:${g62.reason.split(' ')[0]}`); refs.ss62Count++
           const cb = (refs.ss62Block[sym] ?? 0) + 1
           refs.ss62Block[sym] = cb
           if (cb >= R.SS62_LANE1_AFTER) refs.ss62Bump[sym] = (refs.ss62Bump[sym] ?? 0) + R.SS62_LANE1_BUMP
@@ -428,35 +443,35 @@ export function runEngine(input: EngineInput): EngineOutput {
 
         const drops = refs.dropStrike[sym] ?? 0
         if (drops >= R.REPEAT_DROP_STRIKES) {
-          if (R.ss59DownOnly(b)) continue
+          if (R.ss59DownOnly(b)) { rej('repeatDropper_downOnly'); continue }
           const hp = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
           const strong = sigName.startsWith('SS38') || sigName.startsWith('SS39') || sigName.startsWith('SS52')
-          if (!strong && !(hp.action === 'BUY' && hp.confidence >= R.REPEAT_DROP_CONF)) continue
+          if (!strong && !(hp.action === 'BUY' && hp.confidence >= R.REPEAT_DROP_CONF)) { rej('repeatDropper_conf'); continue }
         }
         if (cautiousRed) {
           const cq = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
-          if (!(cq.action === 'BUY' && cq.confidence >= 75) && !sigName.startsWith('SS38') && !sigName.startsWith('SS39')) continue
+          if (!(cq.action === 'BUY' && cq.confidence >= 75) && !sigName.startsWith('SS38') && !sigName.startsWith('SS39')) { rej('cautiousRed_bar75'); continue }
         }
-        if (intraWindow === 'PRE' || intraWindow === 'FLAT') continue
+        if (intraWindow === 'PRE' || intraWindow === 'FLAT') { rej(`window_${intraWindow}`); continue }
         if (ss61m.sig > 1.0) {
           const rv = R.ss61RvProxy(b)
-          if (rv !== null && rv < ss61m.rv) continue
+          if (rv !== null && rv < ss61m.rv) { rej(`ss61_rv_${intraWindow}`); continue }
           const bar = (beast ? R.BEAST_BASELINE_CONF : 63) * ss61m.sig
           const s = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
-          if (!(s.action === 'BUY' && s.confidence >= bar) && !sigName.startsWith('SS38') && !sigName.startsWith('SS39')) continue
+          if (!(s.action === 'BUY' && s.confidence >= bar) && !sigName.startsWith('SS38') && !sigName.startsWith('SS39')) { rej(`ss61_sig_${intraWindow}`); continue }
         }
 
         if (initStop >= q.price || initStop <= 0) initStop = q.price * 0.97
         if (target <= q.price) target = q.price * (1 + (targetPct/100) * 0.6)
         const cappedAlloc = beast ? (100 / maxConcurrent) : Math.min(allocPct, perNameCapPct)
         const maxSpend = R.ss16MaxSpend(sleeve, deployed, cash, cappedAlloc, openRisk, beast)
-        if (maxSpend < MIN_SLICE) continue
+        if (maxSpend < MIN_SLICE) { rej('ss16_noCapital'); continue }
         const { shares, filled } = ss42Slice(maxSpend, q.price)
-        if (shares <= 0 || filled > cash * (beast ? 0.99 : 0.92)) continue
+        if (shares <= 0 || filled > cash * (beast ? 0.99 : 0.92)) { rej('sliceTooSmall'); continue }
         const riskOnNew = (q.price - initStop) * shares
-        if (openRisk + riskOnNew > sleeve * (beast ? R.BEAST_RISK_BUDGET_PCT : 0.03)) continue
+        if (openRisk + riskOnNew > sleeve * (beast ? R.BEAST_RISK_BUDGET_PCT : 0.03)) { rej('riskBudgetFull'); continue }
         const clusterNotional = clusterPos.reduce((s,p)=>s+p.value,0)
-        if (!beast && clusterNotional + filled > R.CLUSTER_MAX_NOTIONAL_PCT * (deployed + filled)) continue
+        if (!beast && clusterNotional + filled > R.CLUSTER_MAX_NOTIONAL_PCT * (deployed + filled)) { rej('clusterNotional'); continue }
 
         const band = beast ? R.ss58BandLine(q.price, atr) : undefined
         positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector, stopLevel: initStop, targetPrice: target, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: false, entrySignal: sigName, maxFavorable: 0, weakSince: 0, pivot: zPivot, pyramids: 0, isZanger: sigName.startsWith('SS52'), frozenStop: initStop, benchExtended: false, bandLine: band, sellLine: band, escalated: false, escUsed: false, escDeadline: 0, floorTouchedAt: 0 })
@@ -602,5 +617,12 @@ export function runEngine(input: EngineInput): EngineOutput {
     marketCondition: cond,
   }
 
-  return { state, refs, newTrades, execLog, notifications }
+  return {
+    state, refs, newTrades, execLog, notifications, rejects,
+    gate: {
+      maxConcurrent, held: positions.filter(p => !p.isSafe).length,
+      scanOnly, noTrade: noTradeRoute, cautiousRed,
+      window: intraWindow, spy: +spyChange.toFixed(2), breadth: +(greenFrac * 100).toFixed(0),
+    },
+  }
 }
