@@ -1,15 +1,21 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    INDICATORS — ported verbatim from the browser engine.
 
-   Nothing in this file has been changed. It is a straight move so that the
-   server and the UI compute identical numbers from identical inputs. If you
-   ever need to prove the port is faithful, this is the file to diff first.
+   Nothing here has been changed except MIN_SLICE (see below). It is a straight
+   move so that the server and the UI compute identical numbers from identical
+   inputs. If you ever need to prove the port is faithful, diff this file first.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 import type { VAP } from './types.js'
 
 export const FRACTIONAL_DECIMALS = 5
-export const MIN_SLICE = 5
+
+/* $1, not $5. At a $50 budget the ALGO_X route sizes positions at roughly $2.92
+   (sleeve 35 x per-name cap 8.3%), and a $5 floor rejected every one of them —
+   so a $50 account could not trade at all in the mode it actually runs in.
+   Fractional shares fill exact dollar amounts, so the floor was always
+   arbitrary; it exists to stop dust positions, and $1 does that fine. */
+export const MIN_SLICE = 1
 
 export function floorToPrecision(x: number, dp: number) { const f = 10 ** dp; return Math.floor(x * f) / f }
 

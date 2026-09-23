@@ -1,15 +1,15 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   RULES — every SS sheet, ported verbatim from the browser engine.
+   RULES — every SS sheet, ported from the browser engine.
 
-   The penny sleeve (SS65 low-float) is deliberately absent: it was reverted out
-   of the app before this port. The SS65 *shadow drawdown* rule is also absent
-   here — it is shadow-only by specification and belongs in the browser until
-   §11 of its sheet clears.
+   The penny sleeve is deliberately absent: it was reverted out of the app
+   before this port. The SS65 shadow drawdown rule is also absent — it is
+   shadow-only by its own specification and belongs in the browser until §11
+   of that sheet clears.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-import type { Position, Quote, Regime, SS39Ctx, VAP } from './types.js'
+import type { Position, Quote, Regime, SS39Ctx } from './types.js'
 import {
-  buildVolumeProfile, calcATR, calcEMA, calcMomentum, calcRSI, calcStdDev,
+  calcATR, calcEMA, calcMomentum, calcRSI,
   ss40ExpectedMove, ss41BreakQuality, ss41Target, vwapProxy, MIN_SLICE,
   type VolumeProfile,
 } from './indicators.js'
@@ -57,6 +57,13 @@ export const RG_MIXEDRED_SPY  = -0.80
 export const RG_FULLRED_BREADTH = 0.25
 export const RG_FULLGREEN_DUALCONF = 5
 
+/* FULL_GREEN relaxation. On a genuinely strong tape — SPY above +0.30% AND
+   breadth at 65% or better — the entry bars ease by 5%. Applies to FULL_GREEN
+   only, so it can never loosen anything on a red or mixed day. It touches the
+   confidence bars and the SS62 volume threshold; it does not touch stops,
+   exits, sizing, or any risk cap. */
+export const RG_FULLGREEN_RELAX = 0.95
+
 export const ROSTER_SIZE_BEAST = 2, ROSTER_SIZE_BEASTPLUS = 3
 export const SWITCH_THRESH_FULLGREEN = 0.0025
 export const SWITCH_THRESH_SEMIGREEN = 0.0022
@@ -87,11 +94,12 @@ export const SS57_HANDICAP_SESSIONS = 3
 export const SS61_W2_START = 12 * 60 + 30
 export const SS61_W3_START = 15 * 60 + 0
 export const SS61_W3_END   = 15 * 60 + 58
-/* SS61 W2 (lunch) recalibrated. `ss61RvProxy` compares recent price ranges to the
-   SESSION average, and that average is dominated by the open. Lunch ranges compress,
-   so 1.17 was asking 1pm to be choppier than 9:30 — unreachable, and it has no
-   bypass, so ORB and break-retest died on it too. 0.65 asks lunch to beat a normal
-   lunch, which is what the sheet intended. */
+
+/* SS61 W2 (lunch) recalibrated. `ss61RvProxy` compares recent price ranges to
+   the SESSION average, and that average is dominated by the open. Lunch ranges
+   compress, so 1.17 was asking 1pm to be choppier than 9:30 — unreachable. It
+   has no bypass either, so ORB and break-retest died on it too. 0.65 asks lunch
+   to beat a normal lunch, which is what the sheet intended. */
 export const SS61_W2_SIG = 1.30, SS61_W2_RV = 0.65
 export const SS61_W3_SIG = 1.15, SS61_W3_RV = 1.10
 export const SS61_A2_STRIKES = 2
@@ -99,10 +107,12 @@ export const SS61_A2_STRIKES = 2
 export const SS62_THETA_ALGO  = 0.70, SS62_THETA_BEAST = 0.80
 export const SS62_ADJ_ALGO    = 2,    SS62_ADJ_BEAST   = 1
 export const SS62_RVOL_EDGE   = 0.85
-/* Same baseline error, different measurement. RVOL here is recent per-minute volume
-   vs the session average, not a trailing 20-day same-window average. A typical lunch
-   runs about half the session rate, so the sheet's "1.20x a normal lunch" is ~0.60
-   in these units. */
+
+/* Same baseline error, different measurement. RVOL here is recent per-minute
+   volume vs the session average, not a trailing 20-day same-window average. A
+   typical lunch runs about half the session rate, so the sheet's "1.20x a
+   normal lunch" is roughly 0.60 in these units. Morning and close (EDGE) are
+   measured against a baseline that already matches them, so 0.85 stands. */
 export const SS62_RVOL_NOON   = 0.60, SS62_RVOL_NOON_BEAST = 0.68
 export const SS62_WARMUP_MIN  = 30
 export const SS62_LANE1_BUMP  = 0.08   // rescaled: 0.15 was ~18% of a 0.85 bar, would be 25% of 0.60
@@ -328,9 +338,11 @@ export function ss61RvProxy(bars: number[]): number | null {
   return rAvg / aAvg
 }
 
-/* ── SS62 volume-confirmed entry gate ── */
-export function ss62Gate(q: Quote, price: number, win: IntradayWindow, beast: boolean, etMin: number, bump: number): { pass: boolean; reason: string } {
-  const thr = (win === 'W2' ? (beast ? SS62_RVOL_NOON_BEAST : SS62_RVOL_NOON) : SS62_RVOL_EDGE) + bump
+/* ── SS62 volume-confirmed entry gate ──
+   `relax` is the FULL_GREEN easing factor (1 everywhere else). It scales the
+   RVOL threshold only; the volume-at-price test is untouched. */
+export function ss62Gate(q: Quote, price: number, win: IntradayWindow, beast: boolean, etMin: number, bump: number, relax = 1): { pass: boolean; reason: string } {
+  const thr = ((win === 'W2' ? (beast ? SS62_RVOL_NOON_BEAST : SS62_RVOL_NOON) : SS62_RVOL_EDGE) + bump) * relax
   if (q.rvol != null && q.rvol < thr) return { pass: false, reason: `RVOL_LOW ${q.rvol.toFixed(2)}<${thr.toFixed(2)}` }
   if (etMin >= SS53_START_MIN + SS62_WARMUP_MIN && q.vap && q.vap.bins.length) {
     const { lo, hi, bins } = q.vap

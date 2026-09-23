@@ -2,7 +2,7 @@
    ENGINE — the browser's runTradingEngine, as a pure function.
 
    Browser version:  setPortfolio(prev => ...) plus a dozen useRefs.
-   Server version:   (state, refs, quotes, bars) => { state, refs, trades, bars }
+   Server version:   (state, refs, quotes, bars) => { state, refs, trades, ... }
 
    Same rules, same order of operations. The only structural change is that
    nothing mutates outside the return value, which makes the whole thing
@@ -34,11 +34,11 @@ export interface EngineOutput {
   execLog: string[]
   notifications: string[]
   /* Why entries were rejected this tick, keyed by reason. Without this the only
-     visible symptom of a too-tight filter is "no trades", which is also what a
-     genuinely quiet market looks like. They are not the same thing and this is
-     the only way to tell them apart. */
+     visible symptom of a too-tight filter is "no trades", which is also exactly
+     what a genuinely quiet market looks like. They are not the same thing and
+     this is the only way to tell them apart. */
   rejects: Record<string, number>
-  gate: { maxConcurrent: number; held: number; scanOnly: boolean; noTrade: boolean; cautiousRed: boolean; window: string; spy: number; breadth: number }
+  gate: { maxConcurrent: number; held: number; scanOnly: boolean; noTrade: boolean; cautiousRed: boolean; window: string; spy: number; breadth: number; relax: number }
 }
 
 function genId() { return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}` }
@@ -53,7 +53,7 @@ export function runEngine(input: EngineInput): EngineOutput {
   const rejects: Record<string, number> = {}
   const rej = (k: string) => { rejects[k] = (rejects[k] ?? 0) + 1 }
 
-  if (cp.withdrawn) return { state: cp, refs, newTrades, execLog, notifications, rejects, gate: { maxConcurrent: 0, held: 0, scanOnly: false, noTrade: false, cautiousRed: false, window: 'n/a', spy: 0, breadth: 0 } }
+  if (cp.withdrawn) return { state: cp, refs, newTrades, execLog, notifications, rejects, gate: { maxConcurrent: 0, held: 0, scanOnly: false, noTrade: false, cautiousRed: false, window: 'n/a', spy: 0, breadth: 0, relax: 1 } }
 
   let positions: Position[] = JSON.parse(JSON.stringify(cp.positions))
   let cash = cp.cash
@@ -127,6 +127,13 @@ export function runEngine(input: EngineInput): EngineOutput {
   const noTradeRoute = router && activeMode === 'NO_TRADE'
   const cautiousRed  = router && activeMode === 'ALGO_X' && regime === 'MIXED_RED'
   const beast = router ? inBeastRoute : beastToggle
+
+  /* FULL_GREEN relaxation: on a genuinely strong tape the entry bars ease 5%.
+     Everywhere else this is 1, so it can never loosen a red or mixed day. It
+     touches confidence bars and the SS62 volume threshold only — never stops,
+     exits, sizing or any risk cap. */
+  const relax = regime === 'FULL_GREEN' ? R.RG_FULLGREEN_RELAX : 1
+
   const safeBudget = (cp.allIn || beast) ? 0 : cp.budget * (cp.safeAlloc / 100)
   const sleeve = (cp.allIn || beast) ? cp.budget : cp.budget * (cp.riskAlloc / 100)
 
@@ -426,12 +433,12 @@ export function runEngine(input: EngineInput): EngineOutput {
         }
         if (!entryBuy) {
           const s = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
-          if (s.action === 'BUY' && s.confidence >= (beast ? R.BEAST_BASELINE_CONF : 63)) { entryBuy = true; sigName = s.signal; reason = s.reasoning; allocPct = s.allocPct }
+          if (s.action === 'BUY' && s.confidence >= (beast ? R.BEAST_BASELINE_CONF : 63) * relax) { entryBuy = true; sigName = s.signal; reason = s.reasoning; allocPct = s.allocPct }
         }
 
         if (!entryBuy) { rej('noSignal'); continue }
 
-        const g62 = R.ss62Gate(q, q.price, intraWindow, beast, etMin, refs.ss62Bump[sym] ?? 0)
+        const g62 = R.ss62Gate(q, q.price, intraWindow, beast, etMin, refs.ss62Bump[sym] ?? 0, relax)
         if (!g62.pass) {
           rej(`ss62:${g62.reason.split(' ')[0]}`); refs.ss62Count++
           const cb = (refs.ss62Block[sym] ?? 0) + 1
@@ -456,7 +463,7 @@ export function runEngine(input: EngineInput): EngineOutput {
         if (ss61m.sig > 1.0) {
           const rv = R.ss61RvProxy(b)
           if (rv !== null && rv < ss61m.rv) { rej(`ss61_rv_${intraWindow}`); continue }
-          const bar = (beast ? R.BEAST_BASELINE_CONF : 63) * ss61m.sig
+          const bar = (beast ? R.BEAST_BASELINE_CONF : 63) * ss61m.sig * relax
           const s = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
           if (!(s.action === 'BUY' && s.confidence >= bar) && !sigName.startsWith('SS38') && !sigName.startsWith('SS39')) { rej(`ss61_sig_${intraWindow}`); continue }
         }
@@ -613,7 +620,7 @@ export function runEngine(input: EngineInput): EngineOutput {
       : inFlatten ? 'Flattening for the close.'
       : noNewEntry ? 'EOD cutoff — managing exits.'
       : marketHalted ? 'Halt — no new longs.'
-      : `8s scan — up to ${maxConcurrent} names`,
+      : `5s scan — up to ${maxConcurrent} names`,
     marketCondition: cond,
   }
 
@@ -623,6 +630,7 @@ export function runEngine(input: EngineInput): EngineOutput {
       maxConcurrent, held: positions.filter(p => !p.isSafe).length,
       scanOnly, noTrade: noTradeRoute, cautiousRed,
       window: intraWindow, spy: +spyChange.toFixed(2), breadth: +(greenFrac * 100).toFixed(0),
+      relax,
     },
   }
 }
