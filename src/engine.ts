@@ -320,7 +320,7 @@ export function runEngine(input: EngineInput): EngineOutput {
   }
 
   /* ── Safe allocation ── */
-  if (!cp.allIn && safeBudget > 0 && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && !universeDefect) {
+    if (session === 'regular' && !cp.allIn && safeBudget > 0 && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && !universeDefect) {
     const safePosns = positions.filter(p => p.isSafe)
     const needed = Math.max(0, safeBudget - safePosns.reduce((s, p) => s + p.value, 0))
     if (needed > MIN_SLICE && cash > MIN_SLICE * 2) {
