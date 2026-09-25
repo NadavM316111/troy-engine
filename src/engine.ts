@@ -431,13 +431,23 @@ export function runEngine(input: EngineInput): EngineOutput {
           const r = R.ss39Step(b, refs.ss39[sym], atr, vp); refs.ss39[sym] = r.newCtx
           if (r.entry) { entryBuy = true; sigName = 'SS39_BREAK_RETEST'; reason = r.reason; initStop = r.stop; target = r.target; allocPct = 20 }
         }
+                let bestConf = 0
         if (!entryBuy) {
           const s = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
+          bestConf = s.confidence
           if (s.action === 'BUY' && s.confidence >= (beast ? R.BEAST_BASELINE_CONF : 63) * relax) { entryBuy = true; sigName = s.signal; reason = s.reasoning; allocPct = s.allocPct }
         }
 
-        if (!entryBuy) { rej('noSignal'); continue }
-
+        if (!entryBuy) {
+          /* Bucket how close it got. "noSignal" alone cannot distinguish a bar
+             that is two points too high from a market with nothing in it. */
+          const barNow = (beast ? R.BEAST_BASELINE_CONF : 63) * relax
+          if (bestConf === 0) rej('noSignal_zero')
+          else if (bestConf >= barNow - 5)  rej('noSignal_within5')
+          else if (bestConf >= barNow - 15) rej('noSignal_within15')
+          else rej('noSignal_farOff')
+          continue
+        }
         const g62 = R.ss62Gate(q, q.price, intraWindow, beast, etMin, refs.ss62Bump[sym] ?? 0, relax)
         if (!g62.pass) {
           rej(`ss62:${g62.reason.split(' ')[0]}`); refs.ss62Count++
