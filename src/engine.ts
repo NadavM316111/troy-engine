@@ -320,7 +320,12 @@ export function runEngine(input: EngineInput): EngineOutput {
   }
 
   /* ── Safe allocation ── */
-    if (session === 'regular' && !cp.allIn && safeBudget > 0 && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && !universeDefect) {
+  /* `session === 'regular'` matters: every other guard here (noNewEntry, inFlatten)
+     is itself scoped to regular hours, so without this the safe sleeve bought
+     during afterhours and premarket. It flattened QQQ at 15:55 then re-bought SPY
+     at 16:00:03 and held overnight, which made the "no overnight exposure" claim
+     false for this sleeve. */
+  if (session === 'regular' && !cp.allIn && safeBudget > 0 && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && !universeDefect) {
     const safePosns = positions.filter(p => p.isSafe)
     const needed = Math.max(0, safeBudget - safePosns.reduce((s, p) => s + p.value, 0))
     if (needed > MIN_SLICE && cash > MIN_SLICE * 2) {
@@ -431,23 +436,13 @@ export function runEngine(input: EngineInput): EngineOutput {
           const r = R.ss39Step(b, refs.ss39[sym], atr, vp); refs.ss39[sym] = r.newCtx
           if (r.entry) { entryBuy = true; sigName = 'SS39_BREAK_RETEST'; reason = r.reason; initStop = r.stop; target = r.target; allocPct = 20 }
         }
-                let bestConf = 0
         if (!entryBuy) {
           const s = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
-          bestConf = s.confidence
           if (s.action === 'BUY' && s.confidence >= (beast ? R.BEAST_BASELINE_CONF : 63) * relax) { entryBuy = true; sigName = s.signal; reason = s.reasoning; allocPct = s.allocPct }
         }
 
-        if (!entryBuy) {
-          /* Bucket how close it got. "noSignal" alone cannot distinguish a bar
-             that is two points too high from a market with nothing in it. */
-          const barNow = (beast ? R.BEAST_BASELINE_CONF : 63) * relax
-          if (bestConf === 0) rej('noSignal_zero')
-          else if (bestConf >= barNow - 5)  rej('noSignal_within5')
-          else if (bestConf >= barNow - 15) rej('noSignal_within15')
-          else rej('noSignal_farOff')
-          continue
-        }
+        if (!entryBuy) { rej('noSignal'); continue }
+
         const g62 = R.ss62Gate(q, q.price, intraWindow, beast, etMin, refs.ss62Bump[sym] ?? 0, relax)
         if (!g62.pass) {
           rej(`ss62:${g62.reason.split(' ')[0]}`); refs.ss62Count++
@@ -487,8 +482,15 @@ export function runEngine(input: EngineInput): EngineOutput {
         if (shares <= 0 || filled > cash * (beast ? 0.99 : 0.92)) { rej('sliceTooSmall'); continue }
         const riskOnNew = (q.price - initStop) * shares
         if (openRisk + riskOnNew > sleeve * (beast ? R.BEAST_RISK_BUDGET_PCT : 0.03)) { rej('riskBudgetFull'); continue }
+        /* Measure the sector cap against the SLEEVE, not against deployed capital.
+           The old form was circular: with an empty book both clusterNotional and
+           deployed are 0, so it reduced to `filled > 0.40 * filled` — always true.
+           The first ALGO_X entry could therefore never open, and since it needed
+           existing positions to pass, it could never get one. That deadlock is why
+           the server took zero main-book trades across six sessions. Beast skipped
+           the check entirely (`!beast`), which is why the browser still traded. */
         const clusterNotional = clusterPos.reduce((s,p)=>s+p.value,0)
-        if (!beast && clusterNotional + filled > R.CLUSTER_MAX_NOTIONAL_PCT * (deployed + filled)) { rej('clusterNotional'); continue }
+        if (!beast && sleeve > 0 && clusterNotional + filled > R.CLUSTER_MAX_NOTIONAL_PCT * sleeve) { rej('clusterNotional'); continue }
 
         const band = beast ? R.ss58BandLine(q.price, atr) : undefined
         positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector, stopLevel: initStop, targetPrice: target, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: false, entrySignal: sigName, maxFavorable: 0, weakSince: 0, pivot: zPivot, pyramids: 0, isZanger: sigName.startsWith('SS52'), frozenStop: initStop, benchExtended: false, bandLine: band, sellLine: band, escalated: false, escUsed: false, escDeadline: 0, floorTouchedAt: 0 })
@@ -520,6 +522,10 @@ export function runEngine(input: EngineInput): EngineOutput {
     currentDay = todayKey
     dayOpenValue = (cp.totalValue && cp.totalValue > 0) ? cp.totalValue : cp.budget
     refs.dayPathMin = -1
+    /* The Beast lockout is a penalty for THAT session's market halt, not a
+       permanent state. Nothing cleared it, so one halt weeks ago pinned the
+       router to ALGO_X for every day since. */
+    beastLockedOut = false
   }
   const newDayPnl = newTotalValue - dayOpenValue
   const newDayPct = dayOpenValue > 0 ? (newDayPnl / dayOpenValue) * 100 : 0

@@ -76,10 +76,9 @@ export const SCRATCH_FREEZE_MS = 30 * 60 * 1000
 export const SS54_MIN_SYMBOLS = 8
 export const SS54_MIN_SECTORS = 3
 export const SS54_EXCLUDE = ['SPY','QQQ','DIA','IWM','VTI']
-// Was 0, which demanded a name's entire sector beat SPY. On a broad day almost
-// no sector does, so this alone killed ~4,500 candidates per 15 minutes — four
-// times more than every other filter combined. -0.15 asks the sector to be
-// roughly in line with the index rather than leading it.
+/* Was 0, which demanded a name's entire sector beat SPY. On a broad day almost
+   no sector does, so this alone killed ~4,500 candidates per 15 minutes. -0.15
+   asks the sector to be roughly in line with the index rather than leading it. */
 export const SS54_SECTOR_RS_FLOOR = -0.15
 export const SS54_SYMBOL_RS_FLOOR = 0.20
 
