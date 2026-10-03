@@ -124,3 +124,20 @@ export async function markEmailed(userId: string, day: number) {
 export async function dayTrades(userId: string, day: number) {
   return await sql`SELECT * FROM trades WHERE user_id = ${userId} AND day = ${day} ORDER BY ts ASC` as any[]
 }
+
+/* Scorecard support. SELL rows are the only ones that carry realized P&L, so
+   they are the unit of "a trade" for every accuracy number. */
+export async function sellsSince(userId: string, fromDay: number) {
+  return await sql`
+    SELECT day, ticker, signal, sleeve, total, pnl, ts FROM trades
+    WHERE user_id = ${userId} AND action = 'SELL' AND pnl IS NOT NULL AND day >= ${fromDay}
+    ORDER BY ts ASC` as any[]
+}
+
+export async function dailyRows(userId: string) {
+  return await sql`SELECT day, row FROM daily_log WHERE user_id = ${userId} ORDER BY day ASC` as any[]
+}
+
+export async function allUsers() {
+  return await sql`SELECT user_id, email FROM portfolios WHERE active = TRUE` as any[]
+}

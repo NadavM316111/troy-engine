@@ -6,8 +6,11 @@
    15:00 the 15:55 flatten never fired and positions carried over silently.
 
    Cadence:
-     * every 5s during premarket / regular / afterhours
-     * idle poll every 60s when the market is closed
+     * every 10s during the regular session (was 5s)
+     * every 2 min in premarket (04:00-09:30) and afterhours (16:00-20:00)
+     * overnight (20:00-04:00) and weekends: a night scan every 5 hours,
+       always waking in time for the 04:00 open
+     * scorecard checkpoints logged at 09:30, 11:30, 14:00 and 16:00 ET
      * bar history flushed to Postgres every 60s, cleared on a new ET day
      * entry-rejection telemetry flushed every 15 minutes
      * daily emails after the flatten
@@ -17,20 +20,23 @@ import 'dotenv/config'
 import cron from 'node-cron'
 import { randomUUID } from 'node:crypto'
 import { runEngine } from './engine.js'
-import { getQuotes, getMarketSession, etMinutesNow, etDayKey } from './quotes.js'
+import { getQuotes, getMarketSession, etMinutesNow, etDayKey, etParts } from './quotes.js'
 import { sendDailyEmails } from './email.js'
 import {
   activeUsers, loadRefs, saveUserTick, loadBars, saveBars, clearBars,
   claimLock, heartbeat, log,
 } from './db.js'
 import { STOCK_LIBRARY, SAFE_STOCKS } from './rules.js'
+import { buildScorecard, scoreLine } from './stats.js'
 
-/* 5s, was 8s. Note that bars are tick prices, so every `bars.length >= N`
-   threshold in the rules is implicitly a time window — at 5s, ten bars is 50
-   seconds rather than 80. Patterns form faster on thinner evidence. Expect more
-   trades; more is not the same as better. Watch the telemetry. */
-const TICK_MS = 5000
-const IDLE_MS = 60000
+/* 10s, was 5s. Bars are tick prices, so every `bars.length >= N` threshold in
+   the rules is implicitly a time window. At 10s, ten bars is 100 seconds rather
+   than 50, and the 120-bar history covers 20 minutes instead of 10. Each bar
+   now carries more real movement and less quote noise, so patterns form on
+   thicker evidence. Expect fewer trades. Watch the scorecard, not the count. */
+const TICK_MS       = 10 * 1000
+const EXTENDED_MS   = 2 * 60 * 1000        // premarket + afterhours
+const NIGHT_MS      = 5 * 60 * 60 * 1000   // 20:00-04:00 and weekends
 const HOLDER = process.env.RAILWAY_REPLICA_ID ?? randomUUID()
 
 let bars: Record<string, number[]> = {}
@@ -136,19 +142,76 @@ async function tick() {
   }
 }
 
+/* Overnight there is nothing to trade, so this only records where the market
+   is drifting (futures-driven ETF prints, earnings movers) so the morning has
+   context in the log. Never touches a portfolio. */
+async function nightScan() {
+  try {
+    if (!(await claimLock(HOLDER))) return
+    const users = await activeUsers()
+    const tickers = [...new Set<string>(['SPY', 'QQQ', ...users.flatMap(u => u.state.stocks ?? [])])]
+    const { quotes } = await getQuotes(tickers)
+    const movers = Object.entries(quotes)
+      .filter(([s]) => s !== 'SPY' && s !== 'QQQ')
+      .sort((a, b) => Math.abs(b[1].changePct) - Math.abs(a[1].changePct))
+      .slice(0, 8)
+      .map(([s, q]) => `${s} ${q.changePct >= 0 ? '+' : ''}${q.changePct.toFixed(2)}%`)
+    await log('info', `night scan: SPY ${quotes.SPY?.changePct ?? '?'}% QQQ ${quotes.QQQ?.changePct ?? '?'}% | movers ${movers.join(', ') || 'none'}`)
+    await heartbeat(HOLDER)
+  } catch (e: any) {
+    await log('error', 'night scan failed', { err: String(e?.stack ?? e) })
+  }
+}
+
+/* Checkpoints. These replace the "rest times" idea: the engine is rules-only,
+   nothing in it tires, so pausing would just miss trades (09:30 is the busiest
+   window of the day). What is useful at those times is a snapshot of how the
+   book is actually doing, written to engine_log so the trend is visible. */
+async function checkpoint(label: string) {
+  try {
+    const users = await activeUsers()
+    for (const u of users) {
+      const c = await buildScorecard(u.user_id)
+      await log('info', `[${u.email}] checkpoint ${label} | ${scoreLine('today', c.today)} | ${scoreLine('all', c.allTime)}`, undefined, u.user_id)
+    }
+  } catch (e: any) {
+    await log('error', 'checkpoint failed', { err: String(e?.stack ?? e) })
+  }
+}
+
+function nextDelay(): number {
+  const { session, nextOpen } = getMarketSession()
+  if (session === 'regular') return TICK_MS
+  if (session === 'premarket' || session === 'afterhours') return EXTENDED_MS
+  // Closed: sleep up to 5h, but never past the 04:00 open. nextOpen is built on
+  // the ET wall-clock basis, so compare it against "now" on the same basis.
+  const untilOpen = nextOpen > 0 ? nextOpen - etParts(Date.now()).getTime() : NIGHT_MS
+  return Math.max(60 * 1000, Math.min(NIGHT_MS, untilOpen + 5000))
+}
+
 async function main() {
   await log('info', `Troy engine starting — holder ${HOLDER}`)
   const restored = await loadBars()
   bars = restored.bars; barsDay = restored.day ?? etDayKey()
   await log('info', `restored bar history for ${Object.keys(bars).length} symbols`)
 
+  const tz = { timezone: 'America/New_York' }
   // Daily report at 16:05 ET, after the 15:55 flatten has settled.
-  cron.schedule('5 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, { timezone: 'America/New_York' })
+  cron.schedule('5 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, tz)
+  cron.schedule('30 9 * * 1-5',  () => { checkpoint('09:30') }, tz)
+  cron.schedule('30 11 * * 1-5', () => { checkpoint('11:30') }, tz)
+  cron.schedule('0 14 * * 1-5',  () => { checkpoint('14:00') }, tz)
+  cron.schedule('0 16 * * 1-5',  () => { checkpoint('16:00') }, tz)
+
+  /* Ticks can now be minutes or hours apart, longer than the 90s lock window.
+     Heartbeat on its own clock so a second instance cannot grab the lock
+     between ticks and double-trade the book. */
+  setInterval(() => { heartbeat(HOLDER).catch(() => {}) }, 30 * 1000)
 
   const loop = async () => {
     const { session } = getMarketSession()
-    await tick()
-    setTimeout(loop, session === 'closed' ? IDLE_MS : TICK_MS)
+    if (session === 'closed') await nightScan(); else await tick()
+    setTimeout(loop, nextDelay())
   }
   loop()
 }

@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "migrate": "psql \"$DATABASE_URL\" -f src/schema.sql"
+    "migrate": "psql \"$DATABASE_URL\" -f src/schema.sql",
+    "stats": "tsx src/stats-cli.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
