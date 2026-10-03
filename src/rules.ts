@@ -16,6 +16,8 @@ import {
 
 /* ── Constants ── */
 export const SAFE_STOCKS = ['SPY', 'QQQ', 'GLD', 'BRK.B', 'VTI']
+// Off: 3 of the first 5 live trades, incl. the worst loss. Buys falling names; the rest of Troy buys strength.
+export const RSI_BOUNCE_ENABLED = false
 export const MAX_CONCURRENT_NORMAL = 12
 export const MAX_CONCURRENT_DEFENSIVE = 3
 export const CLUSTER_MAX_POS = 3
@@ -521,7 +523,7 @@ export function troyBaseline(bars: number[], cashPct: number, targetPct: number,
     return HOLD
   }
   const uptrend = ema5 >= ema20
-  if (rsi < 38 && uptrend && mom > -0.3) return { action: 'BUY', confidence: Math.min(93, 62+(38-rsi)*1.4*agg), signal: 'RSI_OVERSOLD_BOUNCE', reasoning: `RSI ${rsi.toFixed(0)} oversold in uptrend — pullback buy.`, allocPct: Math.min(38, 14+(38-rsi)*0.8), urgency: 'NORMAL' }
+  if (RSI_BOUNCE_ENABLED && rsi < 38 && uptrend && mom > -0.3) return { action: 'BUY', confidence: Math.min(93, 62+(38-rsi)*1.4*agg), signal: 'RSI_OVERSOLD_BOUNCE', reasoning: `RSI ${rsi.toFixed(0)} oversold in uptrend — pullback buy.`, allocPct: Math.min(38, 14+(38-rsi)*0.8), urgency: 'NORMAL' }
   if (ema5 > ema20*1.001 && mom > 0.4 && rsi > 44 && rsi < 67) return { action: 'BUY', confidence: Math.min(88, 52+mom*9*agg), signal: 'MOMENTUM_BREAKOUT', reasoning: `EMA cross + mom +${mom.toFixed(2)}%, RSI ${rsi.toFixed(0)}.`, allocPct: Math.min(32, 14+mom*4), urgency: 'NORMAL' }
   if (uptrend && vol > 0.6 && mom > 0.25 && rsi > 48 && rsi < 70) return { action: 'BUY', confidence: 70, signal: 'VOLATILITY_BREAKOUT', reasoning: `Vol expansion ${vol.toFixed(2)}% in uptrend.`, allocPct: 18, urgency: 'NORMAL' }
   if (agg > 1.35 && uptrend && mom > 0.15 && rsi > 42 && rsi < 65 && session === 'regular') return { action: 'BUY', confidence: 66, signal: 'AGGRESSIVE_MOMENTUM', reasoning: `Behind target ${gap.toFixed(1)}%, uptrend RSI ${rsi.toFixed(0)}.`, allocPct: Math.min(28, 12+agg*4), urgency: 'NORMAL' }

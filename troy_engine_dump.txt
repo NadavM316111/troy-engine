@@ -1,0 +1,2250 @@
+===== ./README.md =====
+# NEURON
+
+Continual learning that does not break.
+
+A retention mechanism for models learning from a live stream, measured
+across a grid world, real weather from five climates, and a 7-billion
+parameter language model. The central claim is established causally: remove
+the cause and the effect vanishes.
+
+Six days of work, about twenty dollars of rented GPU, one laptop.
+
+---
+
+## The result in one table
+
+Does the retention layer help? It depends on one thing, and only one.
+
+| setting | effect |
+|---|---|
+| small world, contradictory rule phases | large win |
+| real weather, chronological | large win, 5 of 5 climates |
+| 7B language model, ordered phases | large win, 3 of 3 seeds |
+| stationary grid world | no effect |
+| noisy grid world | slightly negative |
+| Fashion-MNIST images | inside the noise |
+| **the same weather data, shuffled** | **slightly negative** |
+
+**It helps exactly when the stream is non-stationary, and costs a little
+when it is not.**
+
+That last row is the proof. Same data, same amount, only the order
+destroyed. The advantage does not shrink — it goes to zero.
+
+| shuffle control | ordered | shuffled | collapse |
+|---|---|---|---|
+| Chicago | +11.51 | -1.56 | +13.07 |
+| Singapore | +5.21 | -1.12 | +6.33 |
+| Phoenix | +17.38 | -2.68 | +20.06 |
+| 7B language model | +1.242 | -0.103 | +1.345 |
+
+---
+
+## Running it
+
+Everything is plain PyTorch on CPU. No GPU needed except for the 7B
+experiments, which expect a rented machine.
+
+```bash
+pip install torch numpy
+./run.sh experiments/uncertainty/pf_check.py     # 10 seconds, checks setup
+./run.sh experiments/inheritance/merge.py        # 20 minutes
+./run.sh experiments/grid/grow.py                # 15 minutes
+```
+
+`run.sh` puts `core/` and `worlds/` on the path and runs from `results/`,
+so outputs land beside the existing ones. Experiments use flat imports
+(`from world import ...`), which is why the runner exists rather than a
+package.
+
+Some experiments download data on first run and cache it. The weather
+experiments fetch from Open-Meteo's free archive; no key needed.
+
+---
+
+## Layout
+
+```
+core/          the library
+  stability.py     the retention layer: gate, veto, rehearsal, guard,
+                   sequence replay, replay policies
+  llm_backend.py   transformer + LoRA, for the 7B experiments
+  fake_backend.py  a dict-based backend proving the layer needs no ML
+
+worlds/        environments
+  world.py         9x9 grid, three contradictory rule sets
+  bigworld.py      25x25, 21 outcomes, 6 hidden variables
+  noisy.py         the same seen through imperfect senses
+  sensor.py        real hourly weather
+
+experiments/
+  grid/            growing from nothing, rungs 1-5
+  scale/           100k to 7B parameters, and the credit-assignment bug
+  speed/           where the time actually goes
+  uncertainty/     seven attempts at holding a belief loosely
+  inheritance/     merging, generations, cold start
+  language/        the 2026 fact-injection work
+  local/           reproducing CLAPP, falsifying SAL
+
+results/       every .json and .log this produced
+docs/          the write-up and the competence curve
+archive/       superseded scripts, kept for provenance
+```
+
+---
+
+## What is established
+
+**Retention through rehearsal works, and works because it is retention.**
+Proven by removing the cause in two independent settings.
+
+**It scales.** Holds across a 36-fold network size sweep and at 7 billion
+parameters, 3 of 3 seeds. Protection costs about 4.5x and that multiplier
+does not shrink with size.
+
+**It prevents divergence, separately.** In a shuffled control the
+unprotected arm's damage varied by 3.143 across seeds — one run blew up.
+The protected arm varied by 0.183 with nothing to retain. Two jobs, not one.
+
+**A network can grow from nothing.** Random weights, single-pass stream,
+never revisited. It beats the standard baseline for real weather across
+five climates and matches conventional multi-pass training.
+
+**Inheritance works and compounds.** A newcomer seeded from a 16-way merge
+needs 500 steps to reach what a blank one takes 6,000 to reach. Across six
+generations, merged populations improve while a never-merging control
+degrades from 36.89% to 9.35%.
+
+**Speed in the single-sample regime is solved.** 2.4 to 4.3x, by not
+stepping the optimiser every sample.
+
+---
+
+## What is not
+
+**Frontier scale.** Untestable on any affordable budget.
+
+**Learning a person.** Rung 5 failed five ways. Shell history was one day's
+work. File timestamps turned out to record package managers, not a person.
+Browser history came six points short. Deliberate app logging collapsed to
+the majority class, and reformulating it did not beat "you will still be
+where you are." The honest diagnosis is that collectable personal data does
+not contain the causes of behaviour.
+
+**The no-training-run half of the vision.** Local learning rules reproduce
+and match backpropagation on small problems, but save memory rather than
+time. That is a field-wide open problem.
+
+**Uncertainty about stored beliefs.** Seven attempts. The fifth worked and
+recovers about half the gap: when a reading is ambiguous, sample several
+interpretations of it and carry them forward as separate hypotheses. The
+weighting machinery on top of that turned out to be decoration.
+
+**Merging across an architecture change.** Three approaches failed.
+Same-architecture upgrades carry about half their learning; architecture
+changes do not carry usefully.
+
+---
+
+## What is disproved
+
+**Teaching a language model facts from a real text stream by gradient
+updates converts honest refusals into confident fabrications.** Every probe
+tested, both arms. Before: four honest "I don't know". After: seven
+fabrications and one correct fact.
+
+Different arms invented *different* wrong answers to the same question,
+which shows the model generates domain-shaped text rather than recalling
+anything.
+
+For factual content, retrieval remains the working approach. Continual
+learning by weight update looks right for skills, patterns and structure,
+and wrong for facts.
+
+---
+
+## Method notes
+
+Eight controls failed in ways that changed conclusions. The patterns are
+consistent enough to be rules, and they are the most portable thing here.
+
+**Check the test can fail before running it.** A world where the interesting
+events are 0.4% of the stream cannot measure whether they are learned,
+because ignoring them minimises the loss.
+
+**Hiding a variable is not enough to test memory.** If its value is
+predictable from base rates, a memoryless model matches a remembering one.
+
+**A moving baseline produces artifact curves.** Advantage swung from +2.7 to
++32.8 across a sweep purely because the guess rate moved from 63% to 96%.
+
+**A control that has not converged is not a control.** A fix appeared to
+close 77% of a gap at half training length and 23% at full length.
+
+**Score where the task disagrees with itself.** Whole-stream accuracy hid a
+28.7-point gap behind a 3.1-point one.
+
+**Never test a retention mechanism on a stationary stream.** Made this
+mistake three times. If nothing drifts away there is nothing to retain.
+
+**Identical numbers across different architectures mean collapse**, not
+agreement.
+
+**A transformation that should preserve behaviour must be checked.**
+Permuting a network's units relabels them without changing the function. A
+first implementation scored 11.89% — worse than doing nothing — and looked
+like a clean negative result. The only reason it was caught is a check that
+could only fail if the implementation were wrong.
+
+---
+
+## The bug worth knowing about
+
+Every experiment detached the recurrent hidden state after every step, so
+gradients reached back exactly one step. The network was told it predicted
+wrongly and could only adjust the weights that processed *that moment*.
+Nothing ever pushed it to have stored the relevant fact sixty steps earlier.
+
+**Whatever memory it had was incidental.** The recurrent cell happens to
+carry information forward and the one-step gradient happened to exploit it.
+It was never trained to remember on purpose.
+
+Fixing it closed 23% of the memory gap. A first version of the fix appeared
+to close 77%, but was measured against an undertrained control.
+
+---
+
+## Reading further
+
+`docs/neuron.md` is the full write-up: every result, every failure, and the
+reasoning behind both. `docs/neuron_curve.png` is competence over a
+100,000-step life, with the phase changes marked.
+
+`results/` holds the raw output of every experiment in this repo. Nothing in
+the write-up is unsupported by a file there.
+===== ./package.json =====
+{
+  "name": "troy-engine",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "migrate": "psql \"$DATABASE_URL\" -f src/schema.sql"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "dotenv": "^16.4.7",
+    "node-cron": "^3.0.3",
+    "resend": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
+===== ./tsconfig.json =====
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
+===== ./src/quotes.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   QUOTES — ported from the Next.js route, with one important change.
+
+   The browser fetched quotes per user. The server fetches the UNION of every
+   active user's tickers once per tick and hands the same map to each engine
+   run. Two users no longer means two times the API calls, and — more usefully —
+   both users now see the identical SPY print, so they cannot end up in
+   different regimes on the same afternoon. That was a real bug in the browser
+   version, not a theoretical one.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+import type { MarketSession, Quote, VAP } from './types.js'
+
+const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? ''
+const UA = 'Mozilla/5.0 (compatible; TroyEngine/1.0)'
+
+export function getMarketSession(): { session: MarketSession; nextOpen: number } {
+  const now = new Date()
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  const day = et.getDay(), time = et.getHours() * 100 + et.getMinutes()
+  if (day === 0 || day === 6) {
+    const d = new Date(et); d.setDate(d.getDate() + (day === 0 ? 1 : 2)); d.setHours(4, 0, 0, 0)
+    return { session: 'closed', nextOpen: d.getTime() }
+  }
+  if (time >= 400  && time < 930)  return { session: 'premarket',  nextOpen: 0 }
+  if (time >= 930  && time < 1600) return { session: 'regular',    nextOpen: 0 }
+  if (time >= 1600 && time < 2000) return { session: 'afterhours', nextOpen: 0 }
+  const d = new Date(et)
+  if (time >= 2000) d.setDate(d.getDate() + 1)
+  d.setHours(4, 0, 0, 0)
+  if (d.getDay() === 6) d.setDate(d.getDate() + 2)
+  if (d.getDay() === 0) d.setDate(d.getDate() + 1)
+  return { session: 'closed', nextOpen: d.getTime() }
+}
+
+export function etMinutesNow(): number {
+  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  return et.getHours() * 60 + et.getMinutes()
+}
+
+export function etParts(ts: number): Date { return new Date(new Date(ts).toLocaleString('en-US', { timeZone: 'America/New_York' })) }
+export function tsEtDayKey(ts: number): number { const d = etParts(ts); return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000) }
+export function etDayKey(): number { return tsEtDayKey(Date.now()) }
+export function etDateISO(ts = Date.now()): string { const d = etParts(ts); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` }
+export function etDateLabel(ts = Date.now()): string { return new Date(ts).toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }) }
+
+/* Parse the 1-min volume series Yahoo already returns alongside meta. This is
+   what makes SS62 score instead of passing blind. No extra request. */
+function deriveVolumeMetrics(result: any): { rvol: number | null; vap: VAP | null; dollarVol: number | null } {
+  try {
+    const closes: (number|null)[] = result?.indicators?.quote?.[0]?.close ?? []
+    const vols:   (number|null)[] = result?.indicators?.quote?.[0]?.volume ?? []
+    const pairs: { p: number; v: number }[] = []
+    for (let i = 0; i < Math.min(closes.length, vols.length); i++) {
+      const p = closes[i], v = vols[i]
+      if (typeof p === 'number' && typeof v === 'number' && p > 0 && v >= 0) pairs.push({ p, v })
+    }
+    if (pairs.length < 8) return { rvol: null, vap: null, dollarVol: null }
+    const totalVol = pairs.reduce((s, x) => s + x.v, 0)
+    const dollarVol = pairs.reduce((s, x) => s + x.v * x.p, 0)
+    const avgPerMin = totalVol / pairs.length
+    const recent = pairs.slice(-5)
+    const recentPerMin = recent.reduce((s, x) => s + x.v, 0) / recent.length
+    const rvol = avgPerMin > 0 ? +(recentPerMin / avgPerMin).toFixed(3) : null
+    const prices = pairs.map(x => x.p)
+    const lo = Math.min(...prices), hi = Math.max(...prices)
+    let vap: VAP | null = null
+    if (hi > lo) {
+      const BINS = 20, size = (hi - lo) / BINS
+      const bins = new Array(BINS).fill(0)
+      for (const x of pairs) bins[Math.min(BINS - 1, Math.max(0, Math.floor((x.p - lo) / size)))] += x.v
+      vap = { lo: +lo.toFixed(4), hi: +hi.toFixed(4), bins }
+    }
+    return { rvol, vap, dollarVol: Math.round(dollarVol) }
+  } catch { return { rvol: null, vap: null, dollarVol: null } }
+}
+
+async function fetchYahoo(ticker: string): Promise<Quote | null> {
+  const ySym = ticker.replace(/\./g, '-')
+  const urls = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySym)}?range=1d&interval=1m`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySym)}?range=1d&interval=1m`,
+  ]
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': UA } })
+      if (!res.ok) continue
+      const j: any = await res.json()
+      const result = j?.chart?.result?.[0]
+      const meta = result?.meta
+      if (!meta?.regularMarketPrice) continue
+      const price = meta.regularMarketPrice
+      const prev = meta.chartPreviousClose ?? meta.previousClose ?? price
+      const { rvol, vap, dollarVol } = deriveVolumeMetrics(result)
+      return {
+        price: +price.toFixed(2),
+        changePct: +(prev > 0 ? ((price - prev) / prev) * 100 : 0).toFixed(2),
+        high: +(meta.regularMarketDayHigh ?? price).toFixed(2),
+        low: +(meta.regularMarketDayLow ?? price).toFixed(2),
+        prevClose: +prev.toFixed(2), source: 'yahoo', rvol, vap, dollarVol,
+      }
+    } catch { continue }
+  }
+  return null
+}
+
+async function fetchFinnhub(ticker: string): Promise<Quote | null> {
+  if (!FINNHUB_KEY) return null
+  try {
+    const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`)
+    if (!res.ok) return null
+    const d: any = await res.json()
+    if (!d?.c) return null
+    return { price: +(+d.c).toFixed(2), changePct: +(+(d.dp ?? 0)).toFixed(2), high: +(+(d.h ?? d.c)).toFixed(2), low: +(+(d.l ?? d.c)).toFixed(2), prevClose: +(+(d.pc ?? d.c)).toFixed(2), source: 'finnhub', rvol: null, vap: null, dollarVol: null }
+  } catch { return null }
+}
+
+/* Yahoo first, always. Finnhub's quote endpoint carries no volume series, and
+   without volume SS62 passes every signal unscored — which is the state the app
+   was silently in. Finnhub is the fallback, not the primary. */
+async function fetchOne(ticker: string): Promise<Quote | null> {
+  const yh = await fetchYahoo(ticker); if (yh && yh.price > 0) return yh
+  const fh = await fetchFinnhub(ticker); if (fh && fh.price > 0) return fh
+  return null
+}
+
+export async function getQuotes(tickers: string[]): Promise<{ quotes: Record<string, Quote>; dataSource: string; failed: string[] }> {
+  const results: Record<string, Quote> = {}
+  const failed: string[] = []
+  const CHUNK = 20
+  for (let i = 0; i < tickers.length; i += CHUNK) {
+    const chunk = tickers.slice(i, i + CHUNK)
+    await Promise.all(chunk.map(async t => {
+      const q = await fetchOne(t)
+      if (q) results[t] = q; else failed.push(t)
+    }))
+    if (i + CHUNK < tickers.length) await new Promise(r => setTimeout(r, 150))
+  }
+  const srcs: Record<string, number> = {}
+  Object.values(results).forEach(q => { srcs[q.source] = (srcs[q.source] ?? 0) + 1 })
+  const dataSource = Object.keys(results).length === 0 ? 'none' : (srcs.yahoo && srcs.finnhub) ? 'mixed' : (srcs.yahoo ? 'yahoo' : 'finnhub')
+  return { quotes: results, dataSource, failed }
+}
+
+export function marketHalt(quotes: Record<string, Quote>): { halted: boolean; spyPct: number } {
+  const spy = quotes['SPY']?.changePct ?? quotes['QQQ']?.changePct
+  if (spy === undefined) return { halted: false, spyPct: 0 }
+  return { halted: spy <= -0.8, spyPct: spy }
+}
+===== ./src/email.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   EMAIL — end-of-day report via Resend.
+
+   Sent once per user per trading day, after the 15:55 flatten. The `emailed`
+   flag on daily_log makes it idempotent, so a restart cannot double-send.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+import { Resend } from 'resend'
+import type { DaySummary } from './types.js'
+import { dayTrades, markEmailed, unemailedDays, log } from './db.js'
+import { etDayKey } from './quotes.js'
+
+const resend = new Resend(process.env.RESEND_API_KEY!)
+const FROM = process.env.EMAIL_FROM ?? 'Troy <troy@troyai.co>'
+
+const money = (n: number) => `${n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}`
+const pct   = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
+const esc   = (s: string) => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]!))
+
+function buildHtml(name: string, row: DaySummary, trades: any[], state: any): string {
+  const up = row.pnl >= 0
+  const col = up ? '#2d7a4f' : '#c0392b'
+  const fills = trades.map(t => {
+    const p = t.pnl == null ? '' : `<span style="color:${t.pnl >= 0 ? '#2d7a4f' : '#c0392b'}">${money(Number(t.pnl))}</span>`
+    return `<tr>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;font-weight:600">${esc(t.action)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee">${esc(t.ticker)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">$${Number(t.price).toFixed(2)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${money(Number(t.total))}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${p}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;color:#888;font-size:11px">${esc(t.signal ?? '')}</td>
+    </tr>`
+  }).join('')
+
+  const positions = (state.positions ?? []).map((p: any) =>
+    `<li style="margin:3px 0">${esc(p.ticker)} — ${p.shares.toFixed(4)}sh @ $${p.avgPrice.toFixed(2)}, now $${p.currentPrice.toFixed(2)} (${pct(p.pnlPct)})</li>`
+  ).join('') || '<li style="color:#888">Flat. No overnight exposure.</li>'
+
+  const reflection = (state.lessonsLedger ?? [])[0]
+
+  return `<!doctype html><html><body style="margin:0;padding:24px;background:#fafafa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1a1a1a">
+<div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e5e5;border-radius:12px;overflow:hidden">
+  <div style="padding:24px 28px;border-bottom:1px solid #eee">
+    <div style="font-size:11px;letter-spacing:.12em;color:#999;text-transform:uppercase">Troy Invest · Paper</div>
+    <div style="font-size:22px;font-weight:600;margin-top:4px">${esc(row.label)}</div>
+  </div>
+  <div style="padding:24px 28px">
+    <div style="font-size:34px;font-weight:600">${money(row.closeValue)}</div>
+    <div style="font-size:18px;color:${col};margin-top:2px">${money(row.pnl)} · ${pct(row.pnlPct)} today</div>
+    <table style="width:100%;margin-top:20px;font-size:13px;border-collapse:collapse">
+      <tr><td style="padding:4px 0;color:#666">Opened at</td><td style="text-align:right">${money(row.openValue)}</td></tr>
+      <tr><td style="padding:4px 0;color:#666">Intraday high / low</td><td style="text-align:right">${money(row.high)} / ${money(row.low)}</td></tr>
+      <tr><td style="padding:4px 0;color:#666">Fills</td><td style="text-align:right">${row.trades} · ${row.wins}W / ${row.losses}L</td></tr>
+      <tr><td style="padding:4px 0;color:#666">Trading sleeve / Safe</td><td style="text-align:right">${money(row.mainPnl)} / ${money(row.safePnl)}</td></tr>
+      <tr><td style="padding:4px 0;color:#666">Regime / mode</td><td style="text-align:right">${esc(row.regime)} · ${esc(row.mode)}</td></tr>
+      <tr><td style="padding:4px 0;color:#666">All time</td><td style="text-align:right;color:${state.totalPnl >= 0 ? '#2d7a4f' : '#c0392b'}">${money(state.totalPnl)} · ${pct(state.totalPnlPct)}</td></tr>
+    </table>
+  </div>
+  ${fills ? `<div style="padding:0 28px 20px">
+    <div style="font-size:11px;letter-spacing:.1em;color:#999;text-transform:uppercase;margin-bottom:8px">Fills</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">${fills}</table>
+  </div>` : '<div style="padding:0 28px 20px;color:#888;font-size:13px">No fills today. Zero trades is a valid output, not a failure.</div>'}
+  <div style="padding:0 28px 20px">
+    <div style="font-size:11px;letter-spacing:.1em;color:#999;text-transform:uppercase;margin-bottom:8px">Held overnight</div>
+    <ul style="margin:0;padding-left:18px;font-size:13px">${positions}</ul>
+  </div>
+  ${reflection ? `<div style="padding:0 28px 24px">
+    <div style="font-size:11px;letter-spacing:.1em;color:#999;text-transform:uppercase;margin-bottom:8px">Self-reflection</div>
+    <pre style="white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:11.5px;line-height:1.6;background:#fafafa;border:1px solid #eee;border-radius:8px;padding:14px;margin:0">${esc(reflection)}</pre>
+  </div>` : ''}
+  <div style="padding:16px 28px;background:#fafafa;border-top:1px solid #eee;font-size:11px;color:#999;line-height:1.6">
+    Paper trading on live prices. No real money is at risk. These results come from simulated fills at last price, with no spread or slippage modelled, so real-world execution would be worse.
+  </div>
+</div></body></html>`
+}
+
+export async function sendDailyEmails() {
+  const day = etDayKey()
+  const rows = await unemailedDays(day)
+  if (!rows.length) return
+  for (const r of rows) {
+    try {
+      const row: DaySummary = r.row
+      const trades = await dayTrades(r.user_id, day)
+      const html = buildHtml(r.display_name ?? 'there', row, trades, r.state)
+      await resend.emails.send({
+        from: FROM, to: r.email,
+        subject: `Troy · ${row.label} · ${money(row.pnl)} (${pct(row.pnlPct)})`,
+        html,
+      })
+      await markEmailed(r.user_id, day)
+      await log('info', `daily email sent`, { to: r.email }, r.user_id)
+    } catch (e: any) {
+      await log('error', `daily email failed`, { err: String(e?.message ?? e) }, r.user_id)
+    }
+  }
+}
+===== ./src/engine.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   ENGINE — the browser's runTradingEngine, as a pure function.
+
+   Browser version:  setPortfolio(prev => ...) plus a dozen useRefs.
+   Server version:   (state, refs, quotes, bars) => { state, refs, trades, ... }
+
+   Same rules, same order of operations. The only structural change is that
+   nothing mutates outside the return value, which makes the whole thing
+   testable and makes a crashed tick unable to leave a half-written portfolio.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+import type {
+  DayName, DaySummary, EngineRefs, MarketSession, PortfolioState, Position, Quote, Regime, Trade,
+} from './types.js'
+import {
+  buildVolumeProfile, calcATR, ss42Slice, fmtShares, vwapProxy, MIN_SLICE, FRACTIONAL_DECIMALS,
+} from './indicators.js'
+import * as R from './rules.js'
+import { etDateISO, etDateLabel, etDayKey, tsEtDayKey, marketHalt } from './quotes.js'
+
+export interface EngineInput {
+  state: PortfolioState
+  refs: EngineRefs
+  quotes: Record<string, Quote>
+  bars: Record<string, number[]>
+  session: MarketSession
+  etMin: number
+}
+
+export interface EngineOutput {
+  state: PortfolioState
+  refs: EngineRefs
+  newTrades: Trade[]
+  execLog: string[]
+  notifications: string[]
+  /* Why entries were rejected this tick, keyed by reason. Without this the only
+     visible symptom of a too-tight filter is "no trades", which is also exactly
+     what a genuinely quiet market looks like. They are not the same thing and
+     this is the only way to tell them apart. */
+  rejects: Record<string, number>
+  gate: { maxConcurrent: number; held: number; scanOnly: boolean; noTrade: boolean; cautiousRed: boolean; window: string; spy: number; breadth: number; relax: number }
+}
+
+function genId() { return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}` }
+
+export function runEngine(input: EngineInput): EngineOutput {
+  const { quotes, bars, session, etMin } = input
+  const cp = input.state
+  const refs: EngineRefs = JSON.parse(JSON.stringify(input.refs))
+  const notifications: string[] = []
+  const execLog: string[] = []
+  const newTrades: Trade[] = []
+  const rejects: Record<string, number> = {}
+  const rej = (k: string) => { rejects[k] = (rejects[k] ?? 0) + 1 }
+
+  if (cp.withdrawn) return { state: cp, refs, newTrades, execLog, notifications, rejects, gate: { maxConcurrent: 0, held: 0, scanOnly: false, noTrade: false, cautiousRed: false, window: 'n/a', spy: 0, breadth: 0, relax: 1 } }
+
+  let positions: Position[] = JSON.parse(JSON.stringify(cp.positions))
+  let cash = cp.cash
+  let realized = cp.realizedPnl
+  let wins = 0, losses = 0
+
+  const totalValue = cash + positions.reduce((s, p) => s + p.value, 0)
+  const returnPct = totalValue > 0 ? ((totalValue - cp.budget) / cp.budget) * 100 : 0
+  const targetPct = cp.targetReturn
+  const spyChange = quotes['SPY']?.changePct ?? quotes['QQQ']?.changePct ?? 0
+  const { halted: marketHalted } = marketHalt(quotes)
+
+  const inFlatten  = session === 'regular' && etMin >= R.SS51_FLATTEN_MIN
+  const noNewEntry = session === 'regular' && etMin >= R.SS51_NO_ENTRY_MIN
+  const defensiveMode = spyChange < -0.3 && !marketHalted
+  const intraWindow = R.ss61Window(etMin)
+  const ss61m = R.ss61Mults(intraWindow)
+
+  const router = cp.regimeRouter === true
+  const scanOnly = router && ((session === 'regular' && etMin < R.SS53_START_MIN) || session === 'premarket')
+  const beastToggle = cp.beastMode === true
+  const bnames = Object.keys(quotes).filter(s => s !== 'SPY' && !R.SAFE_STOCKS.includes(s))
+  const greenFrac = bnames.length ? bnames.filter(s => (quotes[s]?.changePct ?? 0) > 0).length / bnames.length : 0
+  const universeDefect = R.ss54UniverseDefect(quotes)
+
+  let ledger = [...(cp.lessonsLedger ?? [])]
+  let lastReviewDay = cp.lastReviewDay ?? 0
+  let regime = (cp.regime ?? 'PENDING') as PortfolioState['regime']
+  let activeMode = cp.activeMode ?? 'PENDING'
+  let roster = [...(cp.roster ?? [])]
+  let bench = [...(cp.bench ?? [])]
+  let switchBudget = cp.switchBudget ?? 0
+  let beastLockedOut = cp.beastLockedOut ?? false
+  let lastRegimeEvalMin = cp.lastRegimeEvalMin ?? 0
+
+  /* ── SS53 regime router ── */
+  if (router && session === 'regular' && etMin >= R.SS53_START_MIN && !inFlatten) {
+    if (activeMode === 'PENDING' || (etMin - lastRegimeEvalMin) >= R.SS53_REEVAL_MIN) {
+      const watch = cp.aiPicksStocks ? [...new Set([...cp.stocks, ...R.STOCK_LIBRARY.map(s => s.sym)])] : cp.stocks
+      const ranked = R.rankCandidates(watch, quotes, bars, spyChange, targetPct, returnPct)
+      const newRegime: Regime = marketHalted ? 'FULL_RED' : R.classifyRegime(spyChange, greenFrac, ranked.length)
+      let desired: PortfolioState['activeMode']
+      if (newRegime === 'FULL_RED') desired = 'NO_TRADE'
+      else if (newRegime === 'MIXED_RED') desired = 'ALGO_X'
+      else if (newRegime === 'SEMI_GREEN') desired = (beastToggle && !beastLockedOut) ? 'BEAST' : 'ALGO_X'
+      else desired = (beastToggle && !beastLockedOut) ? (ranked.length >= R.RG_FULLGREEN_DUALCONF ? 'BEAST_PLUS' : 'BEAST') : 'ALGO_X'
+      const prevRank = R.REGIME_RANK[(regime === 'PENDING' ? newRegime : regime) as Regime]
+      const upgrade = R.REGIME_RANK[newRegime] > prevRank && activeMode !== 'PENDING'
+      let apply = true
+      if (upgrade && (desired === 'BEAST' || desired === 'BEAST_PLUS') && etMin > R.SS53_BEAST_UPGRADE_CUTOFF) apply = false
+      if (apply) {
+        regime = newRegime
+        if (marketHalted) beastLockedOut = true
+        if (beastLockedOut && (desired === 'BEAST' || desired === 'BEAST_PLUS')) desired = 'ALGO_X'
+        if (desired === 'BEAST' || desired === 'BEAST_PLUS') {
+          const size = desired === 'BEAST_PLUS' ? R.ROSTER_SIZE_BEASTPLUS : R.ROSTER_SIZE_BEAST
+          const keep = roster.filter(s => ranked.includes(s)).slice(0, size)
+          const fill = ranked.filter(s => !keep.includes(s))
+          const wasBeast = activeMode === 'BEAST' || activeMode === 'BEAST_PLUS'
+          roster = [...keep, ...fill].slice(0, size)
+          bench = ranked.filter(s => !roster.includes(s)).slice(0, 3)
+          if (!wasBeast) switchBudget = desired === 'BEAST_PLUS' ? R.SWITCH_BUDGET_BEASTPLUS : R.SWITCH_BUDGET_BEAST
+        } else { roster = []; bench = [] }
+        activeMode = desired
+      }
+      lastRegimeEvalMin = etMin
+    }
+  } else if (!router) { activeMode = 'ALGO_X'; regime = 'PENDING' }
+
+  const inBeastRoute = router && (activeMode === 'BEAST' || activeMode === 'BEAST_PLUS')
+  const noTradeRoute = router && activeMode === 'NO_TRADE'
+  const cautiousRed  = router && activeMode === 'ALGO_X' && regime === 'MIXED_RED'
+  const beast = router ? inBeastRoute : beastToggle
+
+  /* FULL_GREEN relaxation: on a genuinely strong tape the entry bars ease 5%.
+     Everywhere else this is 1, so it can never loosen a red or mixed day. It
+     touches confidence bars and the SS62 volume threshold only — never stops,
+     exits, sizing or any risk cap. */
+  const relax = regime === 'FULL_GREEN' ? R.RG_FULLGREEN_RELAX : 1
+
+  const safeBudget = (cp.allIn || beast) ? 0 : cp.budget * (cp.safeAlloc / 100)
+  const sleeve = (cp.allIn || beast) ? cp.budget : cp.budget * (cp.riskAlloc / 100)
+
+  let maxConcurrent = marketHalted ? 0 : beast ? R.BEAST_MAX_CONCURRENT : defensiveMode ? R.MAX_CONCURRENT_DEFENSIVE : (cp.zangerMode ? R.ZANGER_MAX_CONCURRENT : R.MAX_CONCURRENT_NORMAL)
+  if (inBeastRoute) maxConcurrent = activeMode === 'BEAST_PLUS' ? R.ROSTER_SIZE_BEASTPLUS : R.ROSTER_SIZE_BEAST
+  if (cautiousRed) maxConcurrent = Math.min(maxConcurrent, R.MAX_CONCURRENT_DEFENSIVE)
+  if (noTradeRoute || scanOnly) maxConcurrent = 0
+
+  const sellPosition = (pos: Position, price: number, reason: string, signal: string, conviction: Trade['conviction']) => {
+    const proceeds = pos.shares * price, pnl = (price - pos.avgPrice) * pos.shares
+    const rtPct = pos.avgPrice > 0 ? (price - pos.avgPrice) / pos.avgPrice : 0
+    cash += proceeds; realized += pnl
+    if (pnl > 0) wins++; else { losses++; refs.dropStrike[pos.ticker] = (refs.dropStrike[pos.ticker] ?? 0) + 1 }
+    refs.cooldown[pos.ticker] = Date.now()
+    if (Math.abs(rtPct) <= R.SCRATCH_BAND) {
+      const s = refs.scratch[pos.ticker] ?? { count: 0, frozenUntil: 0 }
+      s.count += 1; if (s.count > R.SCRATCH_MAX) s.frozenUntil = Date.now() + R.SCRATCH_FREEZE_MS
+      refs.scratch[pos.ticker] = s
+    }
+    positions = positions.filter(p => p.ticker !== pos.ticker)
+    newTrades.push({ id: genId(), ticker: pos.ticker, action: 'SELL', shares: pos.shares, price, total: proceeds, reasoning: reason, timestamp: Date.now(), pnl, conviction, signal, sleeve: pos.isSafe ? 'SAFE' : 'MAIN' })
+  }
+
+  /* ── SS51 flatten ── */
+  if (inFlatten && positions.length) {
+    const ordered = [...positions].sort((a, b) => b.value - a.value)
+    for (const pos of ordered) {
+      const price = quotes[pos.ticker]?.price ?? pos.currentPrice
+      sellPosition(pos, price, `SS51 FLAT: end-of-day flatten (${etMin >= R.SS51_HARD_MIN ? 'hard deadline' : 'flatten window'}). No overnight exposure.`, 'SS51_FLAT', 'HIGH')
+      execLog.push(`FLAT ${pos.ticker} @ $${price.toFixed(2)}`)
+    }
+    notifications.push(`End-of-day flatten — ${ordered.length} position${ordered.length !== 1 ? 's' : ''} closed`)
+    refs.gStock = []; refs.fkStrike = {}; refs.fkLock = {}; refs.dropStrike = {}; refs.ss62Bump = {}; refs.ss62Block = {}
+  }
+
+  /* ── SS56 flat assert ── */
+  if (session === 'regular' && etMin >= R.SS56_FLAT_ASSERT_MIN && positions.length) {
+    for (const pos of [...positions]) {
+      const price = quotes[pos.ticker]?.price ?? pos.currentPrice
+      sellPosition(pos, price, `SS56 FLAT ASSERT: residue at 15:58 — emergency liquidation.`, 'SS56_FLAT_ASSERT', 'HIGH')
+      execLog.push(`FLAT-ASSERT ${pos.ticker}`)
+    }
+    notifications.push('SS56 flat-assert fired — residue force-closed')
+  }
+
+  /* ── SS37 exit pass ── */
+  if (!inFlatten) for (const pos of cp.positions) {
+    if (!positions.find(p => p.ticker === pos.ticker)) continue
+    const q = quotes[pos.ticker]; if (!q || q.price <= 0) continue
+    const b = bars[pos.ticker] || [pos.currentPrice]
+    const price = q.price
+    const newPeak = Math.max(pos.highWatermark, price)
+
+    if (beast && !pos.isSafe) {
+      const floorLine = pos.avgPrice * (1 - R.SS59_FLOOR_PCT)
+      const hardLine  = pos.avgPrice * (1 - R.SS59_HARD_PCT)
+      const touched   = pos.floorTouchedAt ?? 0
+      if (price <= hardLine) {
+        sellPosition(pos, price, `SS59 HARD: -0.50% breached ($${hardLine.toFixed(2)}) — grace void, instant exit.`, 'SS59_HARD', 'HIGH')
+        refs.a2Strike[pos.ticker] = (refs.a2Strike[pos.ticker] ?? 0) + 1
+        execLog.push(`HARD ${pos.ticker}`); notifications.push(`${pos.ticker} -0.5% instant sell`)
+        continue
+      }
+      if (price <= floorLine) {
+        if (!touched) {
+          positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, floorTouchedAt: Date.now(), currentPrice: price })
+          notifications.push(`${pos.ticker} at -0.3%, 30s to recover`)
+          continue
+        }
+        if (Date.now() - touched >= R.SS59_GRACE_MS) {
+          sellPosition(pos, price, `SS59 floor: -0.30% line held for 30s with no recovery. Small loss, capital freed.`, 'SS59_FLOOR', 'HIGH')
+          refs.a2Strike[pos.ticker] = (refs.a2Strike[pos.ticker] ?? 0) + 1
+          execLog.push(`FLOOR ${pos.ticker}`)
+          continue
+        }
+        continue
+      }
+      if (touched) positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, floorTouchedAt: 0 })
+      const r = R.ss58Tick(pos, price, q.changePct, b, calcATR(b))
+      positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, bandLine: r.bandLine, sellLine: r.sellLine, escalated: r.escalated, escUsed: r.escUsed, escDeadline: r.escDeadline })
+      if (r.sell) {
+        if (r.gEarned && !refs.gStock.includes(pos.ticker)) refs.gStock.push(pos.ticker)
+        sellPosition(pos, price, r.reason, r.gEarned ? 'SS58_GSTOCK' : 'SS58_BAND', 'HIGH')
+        execLog.push(`${r.gEarned ? 'G-STOCK' : 'BAND'} ${pos.ticker}`)
+        notifications.push(`${pos.ticker} +${(((price-pos.avgPrice)/pos.avgPrice)*100).toFixed(2)}% banked`)
+        continue
+      }
+    }
+
+    if (cp.zangerMode && pos.isZanger && !pos.partialDone) {
+      const pv = pos.pivot ?? pos.avgPrice
+      const failedFast = (Date.now() - pos.entryTime <= R.ZANGER_FAIL_FAST_MS) && price < pv
+      const belowTight = price <= Math.max(pos.stopLevel, pos.avgPrice * (1 - R.ZANGER_FAIL_STOP_PCT))
+      if (failedFast || belowTight) {
+        sellPosition(pos, price, `SS52 Zanger failed breakout: back below pivot $${pv.toFixed(2)} — tight -2% cut.`, 'SS52_ZANGER_FAIL', 'HIGH')
+        execLog.push(`ZFAIL ${pos.ticker}`)
+        continue
+      }
+    }
+
+    const ss37 = R.ss37Tick({ ...pos, highWatermark: newPeak }, price)
+
+    if (ss37.action === 'PARTIAL_BANK') {
+      const sellShares = +(pos.shares / 3).toFixed(FRACTIONAL_DECIMALS)
+      const keep = +(pos.shares - sellShares).toFixed(FRACTIONAL_DECIMALS)
+      const proceeds = sellShares * price, pnl = (price - pos.avgPrice) * sellShares
+      cash += proceeds; realized += pnl; if (pnl > 0) wins++; else losses++
+      newTrades.push({ id: genId(), ticker: pos.ticker, action: 'SELL', shares: sellShares, price, total: proceeds, reasoning: ss37.reasoning, timestamp: Date.now(), pnl, conviction: 'HIGH', signal: ss37.signal, sleeve: 'MAIN' })
+      execLog.push(`BANK ${pos.ticker} 1/3`)
+      notifications.push(`${pos.ticker} +${(((price-pos.avgPrice)/pos.avgPrice)*100).toFixed(1)}% — banked, runner live`)
+      positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, shares: keep, value: keep*price, pnl: keep*(price-p.avgPrice), pnlPct: ((price-p.avgPrice)/p.avgPrice)*100, currentPrice: price, highWatermark: newPeak, partialDone: true, stopLevel: ss37.updatedStopLevel, bars: b.slice(-20), peakSince: Date.now(), preTrailLow: Math.min(...b.slice(-6)) })
+      continue
+    }
+    if (ss37.action === 'STOP' || ss37.action === 'RUNNER_STOP') {
+      sellPosition(pos, price, ss37.reasoning, ss37.signal, ss37.action === 'RUNNER_STOP' ? 'HIGH' : 'MEDIUM')
+      execLog.push(`EXIT ${pos.ticker} (${ss37.signal})`)
+      continue
+    }
+
+    const h4 = R.ss50H4TopExit({ ...pos, highWatermark: newPeak }, price)
+    if (h4.exit) { sellPosition(pos, price, h4.reason, 'SS50_H4_CTE', 'HIGH'); execLog.push(`H4 ${pos.ticker}`); continue }
+
+    if (!pos.isSafe) {
+      const age = Date.now() - pos.entryTime
+      const gain = (price - pos.avgPrice) / pos.avgPrice
+      const extended = pos.benchExtended === true
+      const deadline = R.SS55_HOUR_MS + (extended ? R.SS55_EXTEND_MS : 0)
+      if (age >= R.SS55_HOUR_MS && gain < R.SS55_BENCH_PCT) {
+        if (!extended && R.ss55Linear(b)) {
+          positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, benchExtended: true, currentPrice: price, value: p.shares*price, pnl: p.shares*(price-p.avgPrice), pnlPct: gain*100 })
+          notifications.push(`${pos.ticker} +30min (linear climb)`)
+          continue
+        }
+        if (age >= deadline) {
+          sellPosition(pos, price, `SS55 hourly benchmark: no +0.10% in ${extended?'90':'60'} min (${(gain*100).toFixed(2)}%). Rotating capital.`, 'SS55_BENCH', 'MEDIUM')
+          execLog.push(`BENCH ${pos.ticker}`)
+          continue
+        }
+      }
+    }
+
+    const entry = pos.avgPrice
+    const mfe = Math.max(pos.maxFavorable ?? 0, ((price-entry)/entry)*100)
+    let weakSince = pos.weakSince ?? 0
+    const preS2 = !pos.partialDone && price < entry * 1.05
+    if (preS2 && !pos.isSafe) {
+      const weakNow = price < entry && price < vwapProxy(b)
+      if (weakNow) {
+        if (!weakSince) weakSince = Date.now()
+        else if (Date.now() - weakSince >= R.DEAD_WEAK_MS) {
+          sellPosition(pos, price, `SS43 DEAD_WEAK: below entry & VWAP sustained. Thesis failed; recycling capital.`, 'DEAD_WEAK', 'MEDIUM')
+          execLog.push(`DEAD_WEAK ${pos.ticker}`)
+          continue
+        }
+      } else weakSince = 0
+    } else weakSince = 0
+
+    const newPreTrailLow = pos.partialDone && price >= pos.highWatermark ? Math.min(...b.slice(-6)) : pos.preTrailLow
+    positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, currentPrice: price, value: p.shares*price, pnl: p.shares*(price-p.avgPrice), pnlPct: ((price-p.avgPrice)/p.avgPrice)*100, highWatermark: newPeak, stopLevel: Math.max(p.stopLevel, ss37.updatedStopLevel, p.frozenStop ?? 0), bars: b.slice(-20), maxFavorable: mfe, weakSince, peakSince: newPeak > pos.highWatermark ? Date.now() : pos.peakSince, preTrailLow: newPreTrailLow })
+  }
+
+  /* ── SS52 focus switch ── */
+  if (router && (activeMode === 'BEAST' || activeMode === 'BEAST_PLUS') && !inFlatten && !scanOnly) {
+    const bucket = Math.floor(etMin / 5)
+    if (bucket !== refs.candleBucket) {
+      refs.candleBucket = bucket
+      const thr = regime === 'FULL_GREEN' ? R.SWITCH_THRESH_FULLGREEN : regime === 'SEMI_GREEN' ? R.SWITCH_THRESH_SEMIGREEN : R.SWITCH_THRESH_DOWNGRADE
+      let failures = 0
+      for (const sym of [...roster]) {
+        const pos = positions.find(p => p.ticker === sym && !p.isSafe); if (!pos) continue
+        const q = quotes[sym]; if (!q || q.price <= 0) continue
+        if (R.ss52SwitchTrigger(pos, q.price, vwapProxy(bars[sym] || []), spyChange, q.changePct, thr)) {
+          sellPosition(pos, q.price, `SS52 focus-switch: ${sym} failed (drop > ${(thr*100).toFixed(2)}%, below VWAP, weak vs SPY).`, 'SS52_SWITCH', 'MEDIUM')
+          execLog.push(`SWITCH ${sym}`); failures++
+          const repl = bench.find(bn => { const bq = quotes[bn]; return bq && bq.price > 0 && (bq.changePct - spyChange) > 0 && bq.price > vwapProxy(bars[bn] || []) })
+          roster = roster.filter(r => r !== sym)
+          bench = bench.filter(bn => bn !== repl)
+          if (repl) { roster.push(repl); notifications.push(`Switched ${sym} to ${repl}`) }
+          switchBudget = Math.max(0, switchBudget - 1)
+        }
+      }
+      if (switchBudget <= 0 || failures >= 2) { activeMode = 'ALGO_X'; roster = []; bench = []; notifications.push('Beast de-moded to Algorithm X') }
+    }
+  }
+
+  /* ── Safe allocation ── */
+  /* `session === 'regular'` matters: every other guard here (noNewEntry, inFlatten)
+     is itself scoped to regular hours, so without this the safe sleeve bought
+     during afterhours and premarket. It flattened QQQ at 15:55 then re-bought SPY
+     at 16:00:03 and held overnight, which made the "no overnight exposure" claim
+     false for this sleeve. */
+  if (session === 'regular' && !cp.allIn && safeBudget > 0 && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && !universeDefect) {
+    const safePosns = positions.filter(p => p.isSafe)
+    const needed = Math.max(0, safeBudget - safePosns.reduce((s, p) => s + p.value, 0))
+    if (needed > MIN_SLICE && cash > MIN_SLICE * 2) {
+      for (const sym of R.SAFE_STOCKS) {
+        if (safePosns.find(p => p.ticker === sym)) continue
+        const q = quotes[sym]; if (!q || q.price <= 0) continue
+        const b = bars[sym] || []; if (b.length < 3) continue
+        const fc = cash / Math.max(1, cash + positions.reduce((s,p)=>s+p.value,0)) * 100
+        const sig = R.troyBaseline(b, fc, targetPct, returnPct, session, true)
+        if (sig.action === 'BUY' && sig.confidence >= 60) {
+          const spend = Math.min(needed, cash * 0.4, Math.max(0, cash - safeBudget * 0.3))
+          const { shares, filled } = ss42Slice(spend, q.price)
+          if (shares <= 0 || filled > cash * 0.9) continue
+          positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector: R.sectorOf(sym), stopLevel: q.price*0.97, targetPrice: q.price*1.15, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: true, entrySignal: sig.signal, maxFavorable: 0, weakSince: 0, frozenStop: q.price*0.97, benchExtended: false })
+          cash -= filled
+          newTrades.push({ id: genId(), ticker: sym, action: 'BUY', shares, price: q.price, total: filled, reasoning: `Safe alloc: ${sig.reasoning}`, timestamp: Date.now(), conviction: 'MEDIUM', signal: `SAFE_${sig.signal}`, sleeve: 'SAFE' })
+          execLog.push(`SAFE BUY ${sym}`)
+          break
+        }
+      }
+    }
+  }
+
+  /* ── Pyramiding ── */
+  if ((cp.zangerMode || beast) && !marketHalted && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && spyChange > 0.05) {
+    const maxPyr  = beast ? R.BEAST_MAX_PYRAMIDS : R.ZANGER_MAX_PYRAMIDS
+    const pyrTrig = beast ? R.BEAST_PYRAMID_TRIGGER : R.ZANGER_PYRAMID_TRIGGER
+    const riskNow = positions.filter(p => !p.isSafe)
+    let deployedP = riskNow.reduce((s,p)=>s+p.value,0)
+    let openRiskP = riskNow.reduce((s,p)=>s+Math.max(0,(p.currentPrice-p.stopLevel)*p.shares),0)
+    for (const pos of positions.filter(p => (p.isZanger || beast) && !p.isSafe)) {
+      if ((pos.pyramids ?? 0) >= maxPyr) continue
+      const q = quotes[pos.ticker]; if (!q || q.price <= 0) continue
+      const gain = (q.price - pos.avgPrice) / pos.avgPrice
+      if (gain < pyrTrig || q.price < pos.highWatermark) continue
+      const addAllocPct = (beast ? R.BEAST_PER_NAME_CAP_PCT : R.ZANGER_PER_NAME_CAP_PCT) * 0.5
+      const maxSpend = R.ss16MaxSpend(sleeve, deployedP, cash, addAllocPct, openRiskP, beast)
+      if (maxSpend < MIN_SLICE) continue
+      const { shares: addSh, filled: addFill } = ss42Slice(maxSpend, q.price)
+      if (addSh <= 0 || addFill > cash * (beast ? 0.99 : 0.92)) continue
+      const newShares = +(pos.shares + addSh).toFixed(FRACTIONAL_DECIMALS)
+      const newAvg = (pos.avgPrice * pos.shares + q.price * addSh) / newShares
+      const raisedStop = Math.max(pos.stopLevel, pos.avgPrice)
+      const addRisk = Math.max(0, (q.price - raisedStop) * addSh)
+      if (openRiskP + addRisk > sleeve * (beast ? R.BEAST_RISK_BUDGET_PCT : 0.03)) continue
+      cash -= addFill; deployedP += addFill; openRiskP += addRisk
+      positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, shares: newShares, avgPrice: +newAvg.toFixed(4), value: newShares*q.price, currentPrice: q.price, stopLevel: raisedStop, pyramids: (p.pyramids ?? 0) + 1 })
+      newTrades.push({ id: genId(), ticker: pos.ticker, action: 'BUY', shares: addSh, price: q.price, total: addFill, reasoning: `${beast?'BEAST':'SS52 Zanger'} pyramid #${(pos.pyramids ?? 0)+1}: pressing a working move (+${(gain*100).toFixed(1)}%, new high). Stop raised to $${raisedStop.toFixed(2)}.`, timestamp: Date.now(), conviction: 'HIGH', signal: beast ? 'BEAST_PYRAMID' : 'SS52_ZANGER_PYRAMID', sleeve: 'MAIN' })
+      execLog.push(`PYRAMID ${pos.ticker}`)
+    }
+  }
+
+  /* ── Risk allocation (entries) ── */
+  if (marketHalted)    rej('BLOCKED_marketHalt')
+  if (noNewEntry)      rej('BLOCKED_eodCutoff')
+  if (inFlatten)       rej('BLOCKED_flatten')
+  if (scanOnly)        rej('BLOCKED_scanOnlyBefore1030')
+  if (noTradeRoute)    rej('BLOCKED_fullRedStandDown')
+  if (universeDefect)  rej('BLOCKED_universeDefect')
+  if (!marketHalted && !noNewEntry && !inFlatten && !scanOnly && !noTradeRoute && !universeDefect) {
+    const fullWatch = cp.aiPicksStocks ? [...new Set([...cp.stocks, ...R.STOCK_LIBRARY.map(s => s.sym)])] : cp.stocks
+    const watchlist = inBeastRoute ? (roster.length ? roster : fullWatch) : fullWatch
+    const riskPosns = positions.filter(p => !p.isSafe)
+    let deployed = riskPosns.reduce((s,p)=>s+p.value,0)
+    let openRisk = riskPosns.reduce((s,p)=>s+Math.max(0,(p.currentPrice-p.stopLevel)*p.shares),0)
+    const perNameCapPct = beast ? R.BEAST_PER_NAME_CAP_PCT : cp.zangerMode ? R.ZANGER_PER_NAME_CAP_PCT : Math.max(6, 100 / maxConcurrent)
+
+    if (riskPosns.length >= maxConcurrent) rej('maxConcurrentReached')
+    if (riskPosns.length < maxConcurrent) {
+      for (const sym of watchlist) {
+        if (positions.find(p => p.ticker === sym)) continue
+        if (positions.filter(p => !p.isSafe).length >= maxConcurrent) break
+        const cdWindow = beast ? (refs.gStock.includes(sym) ? 0 : R.SS58_REENTRY_MS) : R.SYMBOL_COOLDOWN_MS
+        if (Date.now() - (refs.cooldown[sym] ?? 0) < cdWindow) { rej('cooldown'); continue }
+        if ((refs.fkLock[sym] ?? 0) > Date.now()) { rej('fallingKnifeLock'); continue }
+        if ((refs.handicap[sym] ?? 0) > Date.now()) { rej('handicapped'); continue }
+        if ((refs.a2Strike[sym] ?? 0) >= R.SS61_A2_STRIKES && !beast) { rej('a2Strikes'); continue }
+        const scr = refs.scratch[sym]; if (scr && scr.frozenUntil > Date.now()) { rej('scratchFrozen'); continue }
+        const q = quotes[sym]; if (!q || q.price <= 0) { rej('noQuote'); continue }
+        if (q.changePct < (beast ? -5 : -1.5)) { rej('tooRed'); continue }
+        if (R.SS54_EXCLUDE.includes(sym)) { rej('isIndexETF'); continue }
+        const b = bars[sym] || []; if (b.length < 4) { rej('insufficientBars'); continue }
+
+        const sector = R.sectorOf(sym)
+        if (!R.ss54SectorGreen(sector, quotes, spyChange)) { rej('sectorNotGreen'); continue }
+        if ((q.changePct - spyChange) < R.SS54_SYMBOL_RS_FLOOR) { rej('rsBelowSpy'); continue }
+        const clusterPos = positions.filter(p => !p.isSafe && p.sector === sector)
+        if (!beast && clusterPos.length >= R.CLUSTER_MAX_POS) { rej('sectorClusterFull'); continue }
+
+        const freshTotal = cash + positions.reduce((s,p)=>s+p.value,0)
+        const freshCashPct = freshTotal > 0 ? (cash / freshTotal) * 100 : 100
+        const atr = calcATR(b), vp = buildVolumeProfile(b)
+
+        let entryBuy = false, sigName = '', reason = '', initStop = q.price*0.97, target = q.price*1.05, allocPct = 18
+        let zPivot: number | undefined
+
+        if (cp.zangerMode && spyChange > 0.05 && session === 'regular' && b.length >= R.ZANGER_BASE_MIN_BARS + 3) {
+          const z = R.ss52ZangerBreakout(b, q.price)
+          if (z) { entryBuy = true; sigName = `SS52_ZANGER_${z.grade}`; reason = z.reason; initStop = z.stop; zPivot = z.pivot; target = q.price*(1+Math.max(0.06, targetPct/100)); allocPct = z.grade === 'A' ? R.ZANGER_PER_NAME_CAP_PCT : 16 }
+        }
+        if (!entryBuy && session === 'regular' && b.length >= 8) {
+          if (refs.orb[sym] === undefined) refs.orb[sym] = R.buildORB(b)
+          const orb = refs.orb[sym]
+          if (orb) { const s = R.ss38Signal(b, q.price, atr, vp, orb); if (s) { entryBuy = true; sigName = `SS38_ORB_${s.grade}`; reason = s.reason; initStop = s.stop; target = s.target; allocPct = s.grade === 'A' ? 22 : 16; orb.attempts++ } }
+        }
+        if (!entryBuy && b.length >= 14) {
+          if (!refs.ss39[sym]) refs.ss39[sym] = { state: 'WAIT_BREAK', level: 0, side: null, barsSince: 0, retestLow: q.price, retestHigh: q.price }
+          const r = R.ss39Step(b, refs.ss39[sym], atr, vp); refs.ss39[sym] = r.newCtx
+          if (r.entry) { entryBuy = true; sigName = 'SS39_BREAK_RETEST'; reason = r.reason; initStop = r.stop; target = r.target; allocPct = 20 }
+        }
+        if (!entryBuy) {
+          const s = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
+          if (s.action === 'BUY' && s.confidence >= (beast ? R.BEAST_BASELINE_CONF : 63) * relax) { entryBuy = true; sigName = s.signal; reason = s.reasoning; allocPct = s.allocPct }
+        }
+
+        if (!entryBuy) { rej('noSignal'); continue }
+
+        const g62 = R.ss62Gate(q, q.price, intraWindow, beast, etMin, refs.ss62Bump[sym] ?? 0, relax)
+        if (!g62.pass) {
+          rej(`ss62:${g62.reason.split(' ')[0]}`); refs.ss62Count++
+          const cb = (refs.ss62Block[sym] ?? 0) + 1
+          refs.ss62Block[sym] = cb
+          if (cb >= R.SS62_LANE1_AFTER) refs.ss62Bump[sym] = (refs.ss62Bump[sym] ?? 0) + R.SS62_LANE1_BUMP
+          continue
+        }
+        refs.ss62Block[sym] = 0
+
+        const drops = refs.dropStrike[sym] ?? 0
+        if (drops >= R.REPEAT_DROP_STRIKES) {
+          if (R.ss59DownOnly(b)) { rej('repeatDropper_downOnly'); continue }
+          const hp = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
+          const strong = sigName.startsWith('SS38') || sigName.startsWith('SS39') || sigName.startsWith('SS52')
+          if (!strong && !(hp.action === 'BUY' && hp.confidence >= R.REPEAT_DROP_CONF)) { rej('repeatDropper_conf'); continue }
+        }
+        if (cautiousRed) {
+          const cq = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
+          if (!(cq.action === 'BUY' && cq.confidence >= 75) && !sigName.startsWith('SS38') && !sigName.startsWith('SS39')) { rej('cautiousRed_bar75'); continue }
+        }
+        if (intraWindow === 'PRE' || intraWindow === 'FLAT') { rej(`window_${intraWindow}`); continue }
+        if (ss61m.sig > 1.0) {
+          const rv = R.ss61RvProxy(b)
+          if (rv !== null && rv < ss61m.rv) { rej(`ss61_rv_${intraWindow}`); continue }
+          const bar = (beast ? R.BEAST_BASELINE_CONF : 63) * ss61m.sig * relax
+          const s = R.troyBaseline(b, freshCashPct, targetPct, returnPct, session, false)
+          if (!(s.action === 'BUY' && s.confidence >= bar) && !sigName.startsWith('SS38') && !sigName.startsWith('SS39')) { rej(`ss61_sig_${intraWindow}`); continue }
+        }
+
+        if (initStop >= q.price || initStop <= 0) initStop = q.price * 0.97
+        if (target <= q.price) target = q.price * (1 + (targetPct/100) * 0.6)
+        const cappedAlloc = beast ? (100 / maxConcurrent) : Math.min(allocPct, perNameCapPct)
+        const maxSpend = R.ss16MaxSpend(sleeve, deployed, cash, cappedAlloc, openRisk, beast)
+        if (maxSpend < MIN_SLICE) { rej('ss16_noCapital'); continue }
+        const { shares, filled } = ss42Slice(maxSpend, q.price)
+        if (shares <= 0 || filled > cash * (beast ? 0.99 : 0.92)) { rej('sliceTooSmall'); continue }
+        const riskOnNew = (q.price - initStop) * shares
+        if (openRisk + riskOnNew > sleeve * (beast ? R.BEAST_RISK_BUDGET_PCT : 0.03)) { rej('riskBudgetFull'); continue }
+        /* Measure the sector cap against the SLEEVE, not against deployed capital.
+           The old form was circular: with an empty book both clusterNotional and
+           deployed are 0, so it reduced to `filled > 0.40 * filled` — always true.
+           The first ALGO_X entry could therefore never open, and since it needed
+           existing positions to pass, it could never get one. That deadlock is why
+           the server took zero main-book trades across six sessions. Beast skipped
+           the check entirely (`!beast`), which is why the browser still traded. */
+        const clusterNotional = clusterPos.reduce((s,p)=>s+p.value,0)
+        if (!beast && sleeve > 0 && clusterNotional + filled > R.CLUSTER_MAX_NOTIONAL_PCT * sleeve) { rej('clusterNotional'); continue }
+
+        const band = beast ? R.ss58BandLine(q.price, atr) : undefined
+        positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector, stopLevel: initStop, targetPrice: target, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: false, entrySignal: sigName, maxFavorable: 0, weakSince: 0, pivot: zPivot, pyramids: 0, isZanger: sigName.startsWith('SS52'), frozenStop: initStop, benchExtended: false, bandLine: band, sellLine: band, escalated: false, escUsed: false, escDeadline: 0, floorTouchedAt: 0 })
+        cash -= filled; deployed += filled; openRisk += riskOnNew
+        refs.fkStrike[sym] = (refs.fkStrike[sym] ?? 0) + 1
+        if (refs.fkStrike[sym] >= R.SS59B_STRIKES && R.ss59DownOnly(b)) {
+          refs.fkLock[sym] = Date.now() + R.SS59B_LOCK_MS
+          notifications.push(`${sym} falling-knife lock, benched 2h`)
+        }
+        newTrades.push({ id: genId(), ticker: sym, action: 'BUY', shares, price: q.price, total: filled, reasoning: reason, timestamp: Date.now(), conviction: cappedAlloc >= 12 ? 'HIGH' : 'MEDIUM', signal: sigName, sleeve: 'MAIN' })
+        execLog.push(`BUY ${sym} ${fmtShares(shares)}sh @ $${q.price.toFixed(2)} (${sigName})`)
+        notifications.push(`${sym} ${fmtShares(shares)}sh @ $${q.price.toFixed(2)} — ${sigName}`)
+      }
+    }
+  }
+
+  /* ── Mark ── */
+  const invested = positions.reduce((s,p) => s+p.value, 0)
+  const newTotalValue = Math.max(0, cash) + invested
+  const newTotalPnl = newTotalValue - cp.budget
+  const newPnlPct = cp.budget > 0 ? (newTotalPnl / cp.budget) * 100 : 0
+
+  /* ── SS66 daily log ── */
+  const todayKey = etDayKey()
+  let dailyLog = [...(cp.dailyLog ?? [])]
+  let currentDay = cp.currentDay ?? 0
+  let dayOpenValue = cp.dayOpenValue ?? cp.budget
+  if (currentDay !== todayKey) {
+    currentDay = todayKey
+    dayOpenValue = (cp.totalValue && cp.totalValue > 0) ? cp.totalValue : cp.budget
+    refs.dayPathMin = -1
+    /* The Beast lockout is a penalty for THAT session's market halt, not a
+       permanent state. Nothing cleared it, so one halt weeks ago pinned the
+       router to ALGO_X for every day since. */
+    beastLockedOut = false
+  }
+  const newDayPnl = newTotalValue - dayOpenValue
+  const newDayPct = dayOpenValue > 0 ? (newDayPnl / dayOpenValue) * 100 : 0
+
+  if (session !== 'closed' || dailyLog.some(d => d.day === todayKey)) {
+    const allTrades = [...newTrades, ...(cp.trades ?? [])]
+    const todayTrades = allTrades.filter(t => tsEtDayKey(t.timestamp) === todayKey)
+    const todaySells = todayTrades.filter(t => t.action === 'SELL')
+    const bySleeve = (sl: string) => todaySells.filter(t => (t.sleeve ?? 'MAIN') === sl).reduce((a,t) => a + (t.pnl ?? 0), 0)
+    const idx = dailyLog.findIndex(d => d.day === todayKey)
+    const prevRow = idx >= 0 ? dailyLog[idx] : null
+
+    const fresh: Record<string, DayName> = {}
+    for (const t of todayTrades) {
+      const e = fresh[t.ticker] ?? { t: t.ticker, pnl: 0, fills: 0, sleeve: (t.sleeve ?? 'MAIN') }
+      e.fills += 1
+      if (t.action === 'SELL') e.pnl += (t.pnl ?? 0)
+      if (t.sleeve) e.sleeve = t.sleeve
+      fresh[t.ticker] = e
+    }
+    const stored: Record<string, DayName> = {}
+    for (const n of (prevRow?.names ?? [])) stored[n.t] = n
+    const merged: Record<string, DayName> = { ...stored }
+    for (const [k, v] of Object.entries(fresh)) merged[k] = (stored[k] && stored[k].fills > v.fills) ? stored[k] : v
+    const names = Object.values(merged).sort((a,b) => (b.pnl - a.pnl) || (b.fills - a.fills)).slice(0, 40)
+
+    let path = prevRow?.path ?? []
+    if (etMin !== refs.dayPathMin) { refs.dayPathMin = etMin; path = [...path, +newTotalValue.toFixed(2)].slice(-420) }
+
+    const row: DaySummary = {
+      day: todayKey, date: etDateISO(), label: etDateLabel(),
+      openValue: dayOpenValue, closeValue: newTotalValue,
+      high: Math.max(prevRow?.high ?? newTotalValue, newTotalValue),
+      low:  Math.min(prevRow?.low  ?? newTotalValue, newTotalValue),
+      pnl: newDayPnl, pnlPct: newDayPct,
+      trades: todayTrades.length,
+      wins: todaySells.filter(t => (t.pnl ?? 0) > 0).length,
+      losses: todaySells.filter(t => (t.pnl ?? 0) <= 0).length,
+      mainPnl: bySleeve('MAIN'), safePnl: bySleeve('SAFE'),
+      regime: String(regime), mode: String(activeMode),
+      names, path,
+      closed: session !== 'regular' || etMin >= R.SS51_FLATTEN_MIN,
+    }
+    if (idx >= 0) dailyLog[idx] = row
+    else dailyLog = [row, ...dailyLog].slice(0, 120)
+  }
+
+  /* ── SS57 self-reflection ── */
+  if (etMin >= R.SS57_REVIEW_MIN && session !== 'regular' && lastReviewDay !== todayKey && (cp.trades ?? []).length > 0) {
+    const today = (cp.trades ?? []).filter(t => tsEtDayKey(t.timestamp) === todayKey)
+    const sells = today.filter(t => t.action === 'SELL')
+    const w = sells.filter(t => (t.pnl ?? 0) > 0), l = sells.filter(t => (t.pnl ?? 0) <= 0)
+    const dmg = l.reduce((s,t) => s + Math.abs(t.pnl ?? 0), 0)
+    const gain = w.reduce((s,t) => s + (t.pnl ?? 0), 0)
+    const bySig = (arr: Trade[]) => { const m: Record<string,number> = {}; arr.forEach(t => { const k = t.signal ?? 'UNKNOWN'; m[k] = (m[k] ?? 0) + 1 }); return m }
+    const worst = Object.entries(bySig(l)).sort((a,b)=>b[1]-a[1])[0]
+    const best  = Object.entries(bySig(w)).sort((a,b)=>b[1]-a[1])[0]
+    const symDmg: Record<string,number> = {}
+    l.forEach(t => { symDmg[t.ticker] = (symDmg[t.ticker] ?? 0) + Math.abs(t.pnl ?? 0) })
+    const offenders = Object.entries(symDmg).sort((a,b)=>b[1]-a[1])
+
+    const lines: string[] = []
+    lines.push(`--- ${etDateISO()} - SELF-REFLECTION ---`)
+    lines.push(`RESULT: day ${newDayPnl>=0?'+':''}$${newDayPnl.toFixed(2)} | ${today.length} fills | ${w.length}W/${l.length}L | regime ${regime} | mode ${activeMode}`)
+    lines.push(`WHY I BOUGHT: ${Object.entries(bySig(today.filter(t=>t.action==='BUY'))).map(([k,v])=>`${k}x${v}`).join(', ') || 'no entries'}`)
+    lines.push(`WHY I SOLD: ${Object.entries(bySig(sells)).map(([k,v])=>`${k}x${v}`).join(', ') || 'no exits'}`)
+    if (l.length) lines.push(`WHAT WENT WRONG: ${l.length} losing exits cost $${dmg.toFixed(2)}${worst?`; worst pattern ${worst[0]} (${worst[1]}x)`:''}.`)
+    if (w.length) lines.push(`WHAT WENT RIGHT: ${w.length} winning exits made $${gain.toFixed(2)}${best?`; best pattern ${best[0]} (${best[1]}x)`:''}.`)
+    if (offenders.length) lines.push(`DAMAGE BY NAME: ${offenders.slice(0,3).map(([s,d])=>`${s} -$${d.toFixed(2)}`).join(', ')}`)
+    if (refs.ss62Count > 0) lines.push(`SS62 GATE: blocked ${refs.ss62Count} signal(s) for thin volume. Blocked entries are the gate working.`)
+    const handicapped: string[] = []
+    offenders.forEach(([sym, d]) => {
+      if (d >= Math.max(0.5, cp.budget * 0.004)) { refs.handicap[sym] = Date.now() + R.SS57_HANDICAP_SESSIONS * 86400000; handicapped.push(sym) }
+    })
+    if (handicapped.length) lines.push(`LANE 1 ACTION: handicapping ${handicapped.join(', ')} for ${R.SS57_HANDICAP_SESSIONS} sessions. Restrictive only, auto-expires.`)
+    ledger = [lines.join('\n'), ...ledger].slice(0, R.SS57_LEDGER_MAX)
+    lastReviewDay = todayKey
+    refs.a2Strike = {}
+    refs.ss62Count = 0
+  }
+
+  const cond = universeDefect ? 'UNIVERSE DEFECT — no trades'
+    : inFlatten ? 'END-OF-DAY FLATTEN'
+    : marketHalted ? 'HALT — BROAD SELLOFF'
+    : scanOnly ? 'SCAN-ONLY (waits for 10:30)'
+    : noTradeRoute ? 'NO TRADE — FULL RED (stand down)'
+    : inBeastRoute ? `${activeMode === 'BEAST_PLUS' ? 'BEAST+' : 'BEAST'} — ${regime}`
+    : (router && activeMode === 'ALGO_X') ? `ALGORITHM X — ${regime}`
+    : noNewEntry ? 'NO NEW ENTRIES (EOD)'
+    : defensiveMode ? 'DEFENSIVE — WEAK TAPE'
+    : session === 'regular' ? 'DAY TRADING' : session.toUpperCase()
+
+  const state: PortfolioState = {
+    ...cp,
+    cash: Math.max(0, cash), positions,
+    trades: newTrades.length ? [...newTrades, ...cp.trades].slice(0, 200) : cp.trades,
+    totalValue: newTotalValue, totalPnl: newTotalPnl, totalPnlPct: newPnlPct,
+    dayPnl: newDayPnl, dayPnlPct: newDayPct,
+    realizedPnl: realized, lastUpdated: Date.now(),
+    winCount: cp.winCount + wins, lossCount: cp.lossCount + losses,
+    scanCount: cp.scanCount + 1,
+    valueHistory: [...cp.valueHistory, { t: Date.now(), v: newTotalValue }].slice(-300),
+    regime, activeMode, roster, bench, switchBudget, lastRegimeEvalMin, beastLockedOut,
+    universeDefect, lessonsLedger: ledger, lastReviewDay,
+    dailyLog, currentDay, dayOpenValue,
+    troyThesis: execLog.length ? `Executed: ${execLog.slice(0,3).join(' | ')}` : cp.troyThesis,
+    nextAction: universeDefect ? 'SS54 defect — no entries until the feed is real.'
+      : inFlatten ? 'Flattening for the close.'
+      : noNewEntry ? 'EOD cutoff — managing exits.'
+      : marketHalted ? 'Halt — no new longs.'
+      : `5s scan — up to ${maxConcurrent} names`,
+    marketCondition: cond,
+  }
+
+  return {
+    state, refs, newTrades, execLog, notifications, rejects,
+    gate: {
+      maxConcurrent, held: positions.filter(p => !p.isSafe).length,
+      scanOnly, noTrade: noTradeRoute, cautiousRed,
+      window: intraWindow, spy: +spyChange.toFixed(2), breadth: +(greenFrac * 100).toFixed(0),
+      relax,
+    },
+  }
+}===== ./src/types.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   TROY ENGINE — shared types
+
+   These mirror the browser's types exactly. Keep them in sync: the UI reads
+   the same jsonb blob the engine writes, so a divergence here shows up as
+   silently missing fields in the interface rather than as an error.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export type MarketSession = 'premarket' | 'regular' | 'afterhours' | 'closed'
+export type Regime = 'FULL_GREEN' | 'SEMI_GREEN' | 'MIXED_RED' | 'FULL_RED'
+export type ActiveMode = 'PENDING' | 'BEAST_PLUS' | 'BEAST' | 'ALGO_X' | 'NO_TRADE'
+
+export interface VAP { lo: number; hi: number; bins: number[] }
+
+export interface Quote {
+  price: number; changePct: number; high: number; low: number; prevClose: number
+  source: string
+  rvol?: number | null
+  vap?: VAP | null
+  dollarVol?: number | null
+}
+
+export interface Trade {
+  id: string; ticker: string; action: 'BUY' | 'SELL'
+  shares: number; price: number; total: number
+  reasoning: string; timestamp: number; pnl?: number
+  conviction: 'HIGH' | 'MEDIUM' | 'LOW'; signal?: string
+  sleeve?: 'MAIN' | 'SAFE'
+}
+
+export interface Position {
+  ticker: string; shares: number; entryShares: number
+  avgPrice: number; currentPrice: number; value: number
+  pnl: number; pnlPct: number; sector: string
+  stopLevel: number; targetPrice: number; highWatermark: number
+  partialDone: boolean; entryTime: number; bars: number[]
+  isSafe: boolean; entrySignal?: string
+  maxFavorable?: number; weakSince?: number
+  peakSince?: number; preTrailLow?: number
+  pivot?: number; pyramids?: number; isZanger?: boolean
+  frozenStop?: number; benchExtended?: boolean
+  bandLine?: number; sellLine?: number
+  escalated?: boolean; escUsed?: boolean; escDeadline?: number
+  floorTouchedAt?: number
+}
+
+export interface DayName { t: string; pnl: number; fills: number; sleeve: 'MAIN' | 'SAFE' }
+
+export interface DaySummary {
+  day: number; date: string; label: string
+  openValue: number; closeValue: number
+  high: number; low: number
+  pnl: number; pnlPct: number
+  trades: number; wins: number; losses: number
+  mainPnl: number; safePnl: number
+  regime: string; mode: string
+  names: DayName[]
+  path: number[]
+  closed: boolean
+}
+
+export interface PortfolioState {
+  budget: number; targetReturn: number; stocks: string[]
+  aiPicksStocks: boolean; cash: number; positions: Position[]
+  trades: Trade[]; totalValue: number; totalPnl: number
+  totalPnlPct: number; dayPnl: number; dayPnlPct: number
+  lastUpdated: number; troyThesis: string; marketCondition: string
+  nextAction: string; riskLevel: 'LOW' | 'MODERATE' | 'HIGH' | 'DEFENSIVE'
+  scanCount: number; startDate: number
+  valueHistory: { t: number; v: number }[]; isPaper: true
+  winCount: number; lossCount: number; realizedPnl: number
+  safeAlloc: number; riskAlloc: number; allIn: boolean
+  withdrawn: boolean; withdrawnValue: number
+  zangerMode: boolean; beastMode: boolean; regimeRouter: boolean
+  regime: 'PENDING' | Regime
+  activeMode: ActiveMode
+  roster: string[]; bench: string[]
+  switchBudget: number; lastRegimeEvalMin: number
+  beastLockedOut: boolean; universeDefect: boolean
+  lessonsLedger: string[]; lastReviewDay: number
+  dailyLog: DaySummary[]
+  currentDay: number; dayOpenValue: number
+}
+
+/* The refs the browser held in memory. Persisted per user so a restart does not
+   silently reset cooldowns, strikes and locks mid-session. */
+export interface EngineRefs {
+  cooldown: Record<string, number>
+  scratch: Record<string, { count: number; frozenUntil: number }>
+  gStock: string[]
+  fkStrike: Record<string, number>
+  fkLock: Record<string, number>
+  a2Strike: Record<string, number>
+  dropStrike: Record<string, number>
+  ss62Bump: Record<string, number>
+  ss62Block: Record<string, number>
+  ss62Count: number
+  handicap: Record<string, number>
+  orb: Record<string, { orHigh: number; orLow: number; attempts: number } | null>
+  ss39: Record<string, SS39Ctx>
+  candleBucket: number
+  dayPathMin: number
+}
+
+export type SS39State = 'WAIT_BREAK' | 'WAIT_RETEST' | 'WAIT_CONFIRM' | 'FAILED' | 'EXPIRED'
+export interface SS39Ctx {
+  state: SS39State; level: number; side: 'LONG' | null
+  barsSince: number; retestLow: number; retestHigh: number
+}
+
+export function emptyRefs(): EngineRefs {
+  return {
+    cooldown: {}, scratch: {}, gStock: [], fkStrike: {}, fkLock: {},
+    a2Strike: {}, dropStrike: {}, ss62Bump: {}, ss62Block: {}, ss62Count: 0,
+    handicap: {}, orb: {}, ss39: {}, candleBucket: -1, dayPathMin: -1,
+  }
+}
+
+export interface UserRow {
+  user_id: string
+  email: string
+  display_name: string | null
+  active: boolean
+  email_enabled: boolean
+  state: PortfolioState
+}
+===== ./src/rules.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   RULES — every SS sheet, ported from the browser engine.
+
+   The penny sleeve is deliberately absent: it was reverted out of the app
+   before this port. The SS65 shadow drawdown rule is also absent — it is
+   shadow-only by its own specification and belongs in the browser until §11
+   of that sheet clears.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+import type { Position, Quote, Regime, SS39Ctx } from './types.js'
+import {
+  calcATR, calcEMA, calcMomentum, calcRSI,
+  ss40ExpectedMove, ss41BreakQuality, ss41Target, vwapProxy, MIN_SLICE,
+  type VolumeProfile,
+} from './indicators.js'
+
+/* ── Constants ── */
+export const SAFE_STOCKS = ['SPY', 'QQQ', 'GLD', 'BRK.B', 'VTI']
+export const MAX_CONCURRENT_NORMAL = 12
+export const MAX_CONCURRENT_DEFENSIVE = 3
+export const CLUSTER_MAX_POS = 3
+export const CLUSTER_MAX_NOTIONAL_PCT = 0.40
+
+export const DEAD_WEAK_MS = 30 * 60 * 1000
+export const SYMBOL_COOLDOWN_MS = 30 * 60 * 1000
+
+export const H4_MIN_EXTENSION_R = 1.5
+export const H4_BREAK_BUFFER = 0.0005
+
+export const SS51_NO_ENTRY_MIN = 15 * 60 + 45
+export const SS51_FLATTEN_MIN  = 15 * 60 + 55
+export const SS51_HARD_MIN     = 15 * 60 + 57
+export const SS56_FLAT_ASSERT_MIN = 15 * 60 + 58
+
+export const ZANGER_BASE_MIN_BARS   = 10
+export const ZANGER_EXPANSION_MULT  = 1.6
+export const ZANGER_FAIL_STOP_PCT   = 0.02
+export const ZANGER_FAIL_FAST_MS    = 6 * 60 * 1000
+export const ZANGER_PYRAMID_TRIGGER = 0.03
+export const ZANGER_MAX_PYRAMIDS    = 2
+export const ZANGER_MAX_CONCURRENT  = 6
+export const ZANGER_PER_NAME_CAP_PCT = 22
+
+export const BEAST_MAX_CONCURRENT   = 2
+export const BEAST_PER_NAME_CAP_PCT = 100
+export const BEAST_MAX_PYRAMIDS     = 5
+export const BEAST_PYRAMID_TRIGGER  = 0.02
+export const BEAST_RISK_BUDGET_PCT  = 0.60
+export const BEAST_BASELINE_CONF    = 50
+
+export const SS53_START_MIN            = 10 * 60 + 30
+export const SS53_REEVAL_MIN           = 15
+export const SS53_BEAST_UPGRADE_CUTOFF = 11 * 60
+export const RG_FULLGREEN_SPY = 0.30, RG_FULLGREEN_BREADTH = 0.65
+export const RG_SEMIGREEN_SPY = -0.10
+export const RG_MIXEDRED_SPY  = -0.80
+export const RG_FULLRED_BREADTH = 0.25
+export const RG_FULLGREEN_DUALCONF = 5
+
+/* FULL_GREEN relaxation. On a genuinely strong tape — SPY above +0.30% AND
+   breadth at 65% or better — the entry bars ease by 5%. Applies to FULL_GREEN
+   only, so it can never loosen anything on a red or mixed day. It touches the
+   confidence bars and the SS62 volume threshold; it does not touch stops,
+   exits, sizing, or any risk cap. */
+export const RG_FULLGREEN_RELAX = 0.95
+
+export const ROSTER_SIZE_BEAST = 2, ROSTER_SIZE_BEASTPLUS = 3
+export const SWITCH_THRESH_FULLGREEN = 0.0025
+export const SWITCH_THRESH_SEMIGREEN = 0.0022
+export const SWITCH_THRESH_DOWNGRADE = 0.0020
+export const SWITCH_BUDGET_BEAST = 2, SWITCH_BUDGET_BEASTPLUS = 3
+export const SCRATCH_BAND = 0.0005
+export const SCRATCH_MAX  = 2
+export const SCRATCH_FREEZE_MS = 30 * 60 * 1000
+
+export const SS54_MIN_SYMBOLS = 8
+export const SS54_MIN_SECTORS = 3
+export const SS54_EXCLUDE = ['SPY','QQQ','DIA','IWM','VTI']
+/* Was 0, which demanded a name's entire sector beat SPY. On a broad day almost
+   no sector does, so this alone killed ~4,500 candidates per 15 minutes. -0.15
+   asks the sector to be roughly in line with the index rather than leading it. */
+export const SS54_SECTOR_RS_FLOOR = -0.15
+export const SS54_SYMBOL_RS_FLOOR = 0.20
+
+export const SS55_BENCH_PCT = 0.001
+export const SS55_HOUR_MS   = 60 * 60 * 1000
+export const SS55_EXTEND_MS = 30 * 60 * 1000
+export const SS55_LIN_R2    = 0.50
+export const SS55_LIN_MAXDD = 0.0015
+export const SS55_LIN_MAXFLIP = 6
+
+export const SS57_LEDGER_MAX = 40
+export const SS57_REVIEW_MIN = 16 * 60 + 30
+export const SS57_MASS_SESSIONS = 3
+export const SS57_HANDICAP_SESSIONS = 3
+
+export const SS61_W2_START = 12 * 60 + 30
+export const SS61_W3_START = 15 * 60 + 0
+export const SS61_W3_END   = 15 * 60 + 58
+
+/* SS61 W2 (lunch) recalibrated. `ss61RvProxy` compares recent price ranges to
+   the SESSION average, and that average is dominated by the open. Lunch ranges
+   compress, so 1.17 was asking 1pm to be choppier than 9:30 — unreachable. It
+   has no bypass either, so ORB and break-retest died on it too. 0.65 asks lunch
+   to beat a normal lunch, which is what the sheet intended. */
+export const SS61_W2_SIG = 1.30, SS61_W2_RV = 0.65
+export const SS61_W3_SIG = 1.15, SS61_W3_RV = 1.10
+export const SS61_A2_STRIKES = 2
+
+export const SS62_THETA_ALGO  = 0.70, SS62_THETA_BEAST = 0.80
+export const SS62_ADJ_ALGO    = 2,    SS62_ADJ_BEAST   = 1
+export const SS62_RVOL_EDGE   = 0.85
+
+/* Same baseline error, different measurement. RVOL here is recent per-minute
+   volume vs the session average, not a trailing 20-day same-window average. A
+   typical lunch runs about half the session rate, so the sheet's "1.20x a
+   normal lunch" is roughly 0.60 in these units. Morning and close (EDGE) are
+   measured against a baseline that already matches them, so 0.85 stands. */
+export const SS62_RVOL_NOON   = 0.60, SS62_RVOL_NOON_BEAST = 0.68
+export const SS62_WARMUP_MIN  = 30
+export const SS62_LANE1_BUMP  = 0.08   // rescaled: 0.15 was ~18% of a 0.85 bar, would be 25% of 0.60
+export const SS62_LANE1_AFTER = 2
+
+export const SS58_BAND_LO = 0.004, SS58_BAND_HI = 0.006
+export const SS58_ESC_CEIL = 0.0085
+export const SS58_ESC_CLOCK_MS = 45 * 60 * 1000
+export const SS58_REENTRY_MS = 15 * 60 * 1000
+export const SS58_FASTGROW_PCT = 0.003
+export const SS58_OVEREXT_PCT = 6.0
+
+export const SS59_FLOOR_PCT = 0.0030
+export const SS59_GRACE_MS  = 30 * 1000
+export const SS59_HARD_PCT  = 0.0050
+
+export const REPEAT_DROP_STRIKES = 2
+export const REPEAT_DROP_CONF    = 78
+export const SS59B_STRIKES = 3
+export const SS59B_LOCK_MS = 120 * 60 * 1000
+export const SS59B_WINDOW_BARS = 40
+
+export const STOCK_LIBRARY = [
+  { sym: 'AAPL',  name: 'Apple Inc.',            sector: 'Technology'   },
+  { sym: 'NVDA',  name: 'NVIDIA Corp.',           sector: 'Semiconductor'},
+  { sym: 'MSFT',  name: 'Microsoft Corp.',        sector: 'Technology'   },
+  { sym: 'GOOGL', name: 'Alphabet Inc.',          sector: 'Technology'   },
+  { sym: 'AMZN',  name: 'Amazon.com Inc.',        sector: 'Consumer'     },
+  { sym: 'META',  name: 'Meta Platforms',         sector: 'Technology'   },
+  { sym: 'TSLA',  name: 'Tesla Inc.',             sector: 'EV'           },
+  { sym: 'SPY',   name: 'S&P 500 ETF',            sector: 'Index'        },
+  { sym: 'QQQ',   name: 'Nasdaq 100 ETF',         sector: 'Index'        },
+  { sym: 'BRK.B', name: 'Berkshire Hathaway',     sector: 'Finance'      },
+  { sym: 'JPM',   name: 'JPMorgan Chase',         sector: 'Finance'      },
+  { sym: 'V',     name: 'Visa Inc.',              sector: 'Finance'      },
+  { sym: 'GLD',   name: 'Gold ETF',               sector: 'Commodity'    },
+  { sym: 'AMD',   name: 'Advanced Micro Devices', sector: 'Semiconductor'},
+  { sym: 'NFLX',  name: 'Netflix Inc.',           sector: 'Media'        },
+  { sym: 'PLTR',  name: 'Palantir Technologies',  sector: 'AI'           },
+  { sym: 'XOM',   name: 'Exxon Mobil',            sector: 'Energy'       },
+  { sym: 'LMT',   name: 'Lockheed Martin',        sector: 'Defense'      },
+  { sym: 'VRT',   name: 'Vertiv Holdings',        sector: 'AI Infra'     },
+  { sym: 'SMCI',  name: 'Super Micro Computer',   sector: 'AI Infra'     },
+  { sym: 'CEG',   name: 'Constellation Energy',   sector: 'Energy'       },
+  { sym: 'CRWD',  name: 'CrowdStrike Holdings',   sector: 'Cybersecurity'},
+  { sym: 'PANW',  name: 'Palo Alto Networks',     sector: 'Cybersecurity'},
+  { sym: 'UBER',  name: 'Uber Technologies',      sector: 'Consumer'     },
+  { sym: 'COIN',  name: 'Coinbase Global',        sector: 'Crypto'       },
+  { sym: 'MSTR',  name: 'MicroStrategy',          sector: 'Crypto'       },
+  { sym: 'RDDT',  name: 'Reddit Inc.',            sector: 'Technology'   },
+  { sym: 'ARM',   name: 'Arm Holdings',           sector: 'Semiconductor'},
+  { sym: 'HOOD',  name: 'Robinhood Markets',      sector: 'Finance'      },
+  { sym: 'IONQ',  name: 'IonQ Inc.',              sector: 'Quantum'      },
+  { sym: 'VTI',   name: 'Vanguard Total Market',  sector: 'Index'        },
+  { sym: 'AVGO',  name: 'Broadcom Inc.',           sector: 'Semiconductor'},
+  { sym: 'LLY',   name: 'Eli Lilly',               sector: 'Healthcare'   },
+  { sym: 'WMT',   name: 'Walmart Inc.',            sector: 'Consumer'     },
+  { sym: 'JNJ',   name: 'Johnson & Johnson',       sector: 'Healthcare'   },
+  { sym: 'MA',    name: 'Mastercard Inc.',         sector: 'Finance'      },
+  { sym: 'HD',    name: 'Home Depot',              sector: 'Consumer'     },
+  { sym: 'PG',    name: 'Procter & Gamble',        sector: 'Consumer'     },
+  { sym: 'COST',  name: 'Costco Wholesale',        sector: 'Consumer'     },
+  { sym: 'ORCL',  name: 'Oracle Corp.',            sector: 'Technology'   },
+  { sym: 'ABBV',  name: 'AbbVie Inc.',             sector: 'Healthcare'   },
+  { sym: 'BAC',   name: 'Bank of America',         sector: 'Finance'      },
+  { sym: 'KO',    name: 'Coca-Cola Co.',           sector: 'Consumer'     },
+  { sym: 'CVX',   name: 'Chevron Corp.',           sector: 'Energy'       },
+  { sym: 'MRK',   name: 'Merck & Co.',             sector: 'Healthcare'   },
+  { sym: 'PEP',   name: 'PepsiCo Inc.',            sector: 'Consumer'     },
+  { sym: 'ADBE',  name: 'Adobe Inc.',              sector: 'Technology'   },
+  { sym: 'TMO',   name: 'Thermo Fisher',           sector: 'Healthcare'   },
+  { sym: 'CSCO',  name: 'Cisco Systems',           sector: 'Technology'   },
+  { sym: 'ACN',   name: 'Accenture plc',           sector: 'Technology'   },
+  { sym: 'MCD',   name: "McDonald's Corp.",        sector: 'Consumer'     },
+  { sym: 'ABT',   name: 'Abbott Laboratories',     sector: 'Healthcare'   },
+  { sym: 'LIN',   name: 'Linde plc',               sector: 'Materials'    },
+  { sym: 'GE',    name: 'GE Aerospace',            sector: 'Industrial'   },
+  { sym: 'TXN',   name: 'Texas Instruments',       sector: 'Semiconductor'},
+  { sym: 'DIS',   name: 'Walt Disney Co.',         sector: 'Media'        },
+  { sym: 'INTC',  name: 'Intel Corp.',             sector: 'Semiconductor'},
+  { sym: 'IBM',   name: 'IBM Corp.',               sector: 'Technology'   },
+  { sym: 'QCOM',  name: 'Qualcomm Inc.',           sector: 'Semiconductor'},
+  { sym: 'CAT',   name: 'Caterpillar Inc.',        sector: 'Industrial'   },
+  { sym: 'NOW',   name: 'ServiceNow Inc.',         sector: 'Technology'   },
+  { sym: 'ISRG',  name: 'Intuitive Surgical',      sector: 'Healthcare'   },
+  { sym: 'GS',    name: 'Goldman Sachs',           sector: 'Finance'      },
+  { sym: 'INTU',  name: 'Intuit Inc.',             sector: 'Technology'   },
+  { sym: 'RTX',   name: 'RTX Corp.',               sector: 'Defense'      },
+  { sym: 'HON',   name: 'Honeywell Intl.',         sector: 'Industrial'   },
+  { sym: 'UNH',   name: 'UnitedHealth Group',      sector: 'Healthcare'   },
+  { sym: 'AXP',   name: 'American Express',        sector: 'Finance'      },
+  { sym: 'BKNG',  name: 'Booking Holdings',        sector: 'Consumer'     },
+  { sym: 'BLK',   name: 'BlackRock Inc.',          sector: 'Finance'      },
+  { sym: 'BA',    name: 'Boeing Co.',              sector: 'Defense'      },
+]
+
+export const REGIME_RANK: Record<Regime, number> = { FULL_RED: 0, MIXED_RED: 1, SEMI_GREEN: 2, FULL_GREEN: 3 }
+
+export function sectorOf(sym: string): string {
+  return STOCK_LIBRARY.find(x => x.sym === sym)?.sector || 'Other'
+}
+
+/* ── SS16 capital ── */
+export function ss16MaxSpend(sleeve: number, deployed: number, cash: number, allocPct: number, openRisk: number, beast = false): number {
+  const available = Math.max(0, sleeve * (beast ? 1.0 : 0.70) - deployed)
+  if (available < MIN_SLICE) return 0
+  const reserveFloor = beast ? 0 : sleeve * 0.30
+  if (cash <= reserveFloor) return 0
+  if (openRisk >= sleeve * (beast ? BEAST_RISK_BUDGET_PCT : 0.03)) return 0
+  return Math.min(available, sleeve * (beast ? 1.0 : 0.25), sleeve * (allocPct / 100), Math.max(0, cash - reserveFloor), cash * (beast ? 0.99 : 0.92))
+}
+
+/* ── SS37 v1.2 exit ladder ── */
+export interface SS37Result {
+  action: 'STOP' | 'PARTIAL_BANK' | 'RUNNER_STOP' | 'HOLD'
+  signal: string; reasoning: string; updatedStopLevel: number
+  sellFraction: number; stage: 'S1' | 'S2' | 'S3' | 'S4' | null
+}
+
+export function ss37Tick(pos: Position, price: number): SS37Result {
+  const entry = pos.avgPrice, peak = Math.max(pos.highWatermark, price)
+  let stop = pos.stopLevel
+  const hardStop = entry * 0.97
+  if (price >= entry * 1.05) stop = Math.max(stop, entry)
+  if (pos.partialDone)       stop = Math.max(stop, peak * 0.96)
+  const effectiveStop = Math.max(hardStop, stop)
+  if (!pos.partialDone && price >= entry * 1.06) {
+    return { action: 'PARTIAL_BANK', signal: 'SS37_S3_BANK', reasoning: `SS37-S3: +${(((price-entry)/entry)*100).toFixed(2)}% >= +6%. Banking 1/3 @ $${price.toFixed(2)}.`, updatedStopLevel: Math.max(stop, entry), sellFraction: 1/3, stage: 'S3' }
+  }
+  if (price <= effectiveStop) {
+    const isRunner = pos.partialDone && effectiveStop > hardStop
+    const isBE = !pos.partialDone && effectiveStop >= entry && price <= entry
+    const stage = isRunner ? 'S4' : isBE ? 'S2' : 'S1'
+    return { action: isRunner ? 'RUNNER_STOP' : 'STOP', signal: isRunner ? 'SS37_S4_TRAIL' : isBE ? 'SS37_S2_BE' : 'SS37_S1_HARD', reasoning: `SS37-${stage}: Stop $${effectiveStop.toFixed(2)} @ $${price.toFixed(2)} (${((price-entry)/entry*100).toFixed(2)}%).${isRunner ? ` Peak $${peak.toFixed(2)}.` : ''}`, updatedStopLevel: effectiveStop, sellFraction: 1.0, stage: stage as any }
+  }
+  return { action: 'HOLD', signal: 'SS37_HOLD', reasoning: `Stop $${effectiveStop.toFixed(2)}. Peak $${peak.toFixed(2)}.`, updatedStopLevel: stop, sellFraction: 0, stage: null }
+}
+
+export function ss50H4TopExit(pos: Position, price: number): { exit: boolean; reason: string } {
+  if (!pos.partialDone) return { exit: false, reason: '' }
+  const entry = pos.avgPrice
+  const R = Math.max(entry * 0.03, 0.01)
+  if (pos.highWatermark - entry < H4_MIN_EXTENSION_R * R) return { exit: false, reason: '' }
+  const ref = pos.preTrailLow ?? entry
+  if (price < ref - ref * H4_BREAK_BUFFER && price < pos.highWatermark) {
+    return { exit: true, reason: `SS50-H4 CTE_T1: peak $${pos.highWatermark.toFixed(2)} rejected, broke pre-peak low $${ref.toFixed(2)} — banking runner near the high.` }
+  }
+  return { exit: false, reason: '' }
+}
+
+/* ── SS58 Beast sell-line band ── */
+export function ss58FastGrow(bars: number[]): boolean {
+  const w = bars.slice(-8); if (w.length < 5) return false
+  const net = (w[w.length-1] - w[0]) / w[0]
+  if (net < SS58_FASTGROW_PCT) return false
+  const last = w.slice(-6); let greens = 0
+  for (let i=1;i<last.length;i++) if (last[i] > last[i-1]) greens++
+  return greens >= 3
+}
+
+export function ss58BandLine(entry: number, atr: number): number {
+  const raw = atr > 0 && entry > 0 ? atr/entry : SS58_BAND_LO
+  return entry * (1 + Math.min(SS58_BAND_HI, Math.max(SS58_BAND_LO, raw)))
+}
+
+export function ss58Tick(pos: Position, price: number, changePct: number, bars: number[], atr: number) {
+  const entry = pos.avgPrice
+  const bandLine = pos.bandLine ?? ss58BandLine(entry, atr)
+  let sellLine = pos.sellLine ?? bandLine
+  let escalated = pos.escalated ?? false
+  let escUsed = pos.escUsed ?? false
+  let escDeadline = pos.escDeadline ?? 0
+  const escLine = entry * (1 + SS58_ESC_CEIL)
+  if (changePct > SS58_OVEREXT_PCT) { escalated = false; sellLine = bandLine }
+  else {
+    if (!escUsed && ss58FastGrow(bars)) { sellLine = escLine; escalated = true; escUsed = true; escDeadline = Date.now() + SS58_ESC_CLOCK_MS }
+    if (escalated && Date.now() > escDeadline && price < escLine) { escalated = false; sellLine = bandLine }
+  }
+  let sell = false, gEarned = false, reason = ''
+  if (price >= sellLine) {
+    sell = true
+    if (escalated && price >= escLine && Date.now() <= escDeadline) { gEarned = true; reason = `SS58 G-Stock: escalated line +0.85% printed ($${sellLine.toFixed(2)}). Banked; symbol earns cooldown exemption.` }
+    else reason = `SS58 band profit-take: +${(((price-entry)/entry)*100).toFixed(2)}% line printed ($${sellLine.toFixed(2)}). Banking the move.`
+  }
+  return { bandLine, sellLine, escalated, escUsed, escDeadline, sell, gEarned, reason }
+}
+
+export function ss59DownOnly(bars: number[]): boolean {
+  const w = bars.slice(-SS59B_WINDOW_BARS); if (w.length < 8) return false
+  if (w[w.length-1] >= w[0]) return false
+  let hiIdx = 0; for (let i=1;i<w.length;i++) if (w[i] > w[hiIdx]) hiIdx = i
+  if (hiIdx > Math.floor(w.length/3)) return false
+  let consecUp = 0
+  for (let i=1;i<w.length;i++) { if (w[i] > w[i-1]) { consecUp++; if (consecUp >= 2) return false } else consecUp = 0 }
+  return true
+}
+
+/* ── SS61 intraday windows ── */
+export type IntradayWindow = 'PRE' | 'W1' | 'W2' | 'W3' | 'FLAT'
+
+export function ss61Window(etMin: number): IntradayWindow {
+  if (etMin < SS53_START_MIN) return 'PRE'
+  if (etMin < SS61_W2_START) return 'W1'
+  if (etMin < SS61_W3_START) return 'W2'
+  if (etMin < SS61_W3_END)   return 'W3'
+  return 'FLAT'
+}
+
+export function ss61Mults(w: IntradayWindow): { sig: number; rv: number } {
+  if (w === 'W2') return { sig: SS61_W2_SIG, rv: SS61_W2_RV }
+  if (w === 'W3') return { sig: SS61_W3_SIG, rv: SS61_W3_RV }
+  return { sig: 1.0, rv: 0 }
+}
+
+export function ss61RvProxy(bars: number[]): number | null {
+  if (bars.length < 14) return null
+  const ranges: number[] = []
+  for (let i = 1; i < bars.length; i++) ranges.push(Math.abs(bars[i] - bars[i-1]))
+  const recent = ranges.slice(-5)
+  const rAvg = recent.reduce((a,b)=>a+b,0) / recent.length
+  const aAvg = ranges.reduce((a,b)=>a+b,0) / ranges.length
+  if (aAvg <= 0) return null
+  return rAvg / aAvg
+}
+
+/* ── SS62 volume-confirmed entry gate ──
+   `relax` is the FULL_GREEN easing factor (1 everywhere else). It scales the
+   RVOL threshold only; the volume-at-price test is untouched. */
+export function ss62Gate(q: Quote, price: number, win: IntradayWindow, beast: boolean, etMin: number, bump: number, relax = 1): { pass: boolean; reason: string } {
+  const thr = ((win === 'W2' ? (beast ? SS62_RVOL_NOON_BEAST : SS62_RVOL_NOON) : SS62_RVOL_EDGE) + bump) * relax
+  if (q.rvol != null && q.rvol < thr) return { pass: false, reason: `RVOL_LOW ${q.rvol.toFixed(2)}<${thr.toFixed(2)}` }
+  if (etMin >= SS53_START_MIN + SS62_WARMUP_MIN && q.vap && q.vap.bins.length) {
+    const { lo, hi, bins } = q.vap
+    let peak = 0; for (const b of bins) if (b > peak) peak = b
+    if (peak > 0 && hi > lo) {
+      const size = (hi - lo) / bins.length
+      const idx = Math.min(bins.length - 1, Math.max(0, Math.floor((price - lo) / size)))
+      const theta = beast ? SS62_THETA_BEAST : SS62_THETA_ALGO
+      const adj   = beast ? SS62_ADJ_BEAST   : SS62_ADJ_ALGO
+      let ok = false
+      for (let d = -adj; d <= adj && !ok; d++) { const i = idx + d; if (i >= 0 && i < bins.length && bins[i] >= theta * peak) ok = true }
+      if (!ok) return { pass: false, reason: 'LVN_PRICE' }
+    }
+  }
+  return { pass: true, reason: '' }
+}
+
+/* ── SS54 universe protection ── */
+export function ss54UniverseDefect(quotes: Record<string, Quote>): boolean {
+  const cand = Object.keys(quotes).filter(s => !SS54_EXCLUDE.includes(s) && (quotes[s]?.price ?? 0) > 0)
+  if (cand.length < SS54_MIN_SYMBOLS) return true
+  const sectors = new Set(cand.map(sectorOf))
+  return sectors.size < SS54_MIN_SECTORS
+}
+
+export function ss54SectorGreen(sector: string, quotes: Record<string, Quote>, spyChange: number): boolean {
+  const peers = STOCK_LIBRARY.filter(x => x.sector === sector).map(x => x.sym).filter(s => (quotes[s]?.price ?? 0) > 0)
+  if (!peers.length) return true
+  const sectorRet = peers.reduce((a, s) => a + (quotes[s]?.changePct ?? 0), 0) / peers.length
+  return (sectorRet - spyChange) >= SS54_SECTOR_RS_FLOOR
+}
+
+/* ── SS55 linear-climb extension ── */
+export function ss55Linear(bars: number[]): boolean {
+  const w = bars.slice(-12); if (w.length < 5) return false
+  const n = w.length; let sx=0, sy=0, sxx=0, sxy=0
+  for (let i=0;i<n;i++){ sx+=i; sy+=w[i]; sxx+=i*i; sxy+=i*w[i] }
+  const denom = n*sxx - sx*sx; if (denom === 0) return false
+  const slope = (n*sxy - sx*sy) / denom
+  if (slope <= 0) return false
+  const mean = sy/n, intercept = (sy - slope*sx)/n
+  let ssTot=0, ssRes=0
+  for (let i=0;i<n;i++){ const pred = slope*i + intercept; ssRes += (w[i]-pred)**2; ssTot += (w[i]-mean)**2 }
+  const r2 = ssTot === 0 ? 1 : 1 - ssRes/ssTot
+  if (r2 < SS55_LIN_R2) return false
+  let hi = w[0], maxDD = 0
+  for (const p of w){ hi = Math.max(hi, p); maxDD = Math.max(maxDD, (hi - p)/hi) }
+  if (maxDD > SS55_LIN_MAXDD) return false
+  let flips = 0
+  for (let i=2;i<n;i++){ const a = w[i-1]-w[i-2], b = w[i]-w[i-1]; if ((a>0&&b<0)||(a<0&&b>0)) flips++ }
+  return flips <= SS55_LIN_MAXFLIP
+}
+
+/* ── SS38 opening-range break ── */
+export interface ORBState { orHigh: number; orLow: number; attempts: number }
+
+export function buildORB(bars: number[]): ORBState | null {
+  const K = Math.max(4, Math.floor(bars.length * 0.15))
+  if (bars.length < K + 3) return null
+  const w = bars.slice(0, K)
+  return { orHigh: Math.max(...w), orLow: Math.min(...w), attempts: 0 }
+}
+
+export function ss38Signal(bars: number[], price: number, atr: number, vp: VolumeProfile | null, orb: ORBState | null) {
+  if (!orb || orb.attempts >= 2 || bars.length < 6) return null
+  const p2 = bars[bars.length - 2], p3 = bars.length > 2 ? bars[bars.length - 3] : p2
+  if (p2 > orb.orHigh && p3 <= orb.orHigh) {
+    const bq = ss41BreakQuality(price, 'UP', vp); if (bq === 'SKIP') return null
+    const stop = Math.max(orb.orLow, price - 0.75 * atr)
+    const r = price - stop, rTarget = price + 1.5 * r
+    const s41t = ss41Target(price, 'UP', vp), em = price + ss40ExpectedMove(bars)
+    const target = Math.max(rTarget, s41t ? Math.min(s41t, em) : em)
+    return { buy: true, stop, target, reason: `SS38 ORB up-break (${p2.toFixed(2)} > OR_high ${orb.orHigh.toFixed(2)}), q=${bq}, tgt 1.5R`, grade: bq }
+  }
+  return null
+}
+
+/* ── SS39 break-retest ── */
+export function detectBox(bars: number[]): { top: number; bot: number } | null {
+  if (bars.length < 14) return null
+  const w = bars.slice(-24), hi = Math.max(...w), lo = Math.min(...w), mid = (hi + lo) / 2, tol = (hi - lo) * 0.38
+  if (w.filter(p => Math.abs(p - mid) <= tol / 2).length / w.length < 0.58) return null
+  return { top: mid + tol / 2, bot: mid - tol / 2 }
+}
+
+export function ss39Step(bars: number[], ctx: SS39Ctx, atr: number, vp: VolumeProfile | null) {
+  const NO = (c: SS39Ctx) => ({ entry: false, newCtx: c, stop: 0, target: 0, reason: '' })
+  const price = bars[bars.length - 1], T = 0.25 * atr
+  if (ctx.state === 'WAIT_BREAK') {
+    const box = detectBox(bars); if (!box) return NO(ctx)
+    const prev = bars[bars.length - 2], prev2 = bars.length > 2 ? bars[bars.length - 3] : prev
+    if (prev > box.top && prev2 <= box.top) {
+      if (ss41BreakQuality(price, 'UP', vp) === 'SKIP') return NO(ctx)
+      return NO({ state: 'WAIT_RETEST', level: box.top, side: 'LONG', barsSince: 0, retestLow: price, retestHigh: price })
+    }
+    return NO(ctx)
+  }
+  if (ctx.state === 'WAIT_RETEST') {
+    const nc: SS39Ctx = { ...ctx, barsSince: ctx.barsSince + 1, retestLow: Math.min(ctx.retestLow, price), retestHigh: Math.max(ctx.retestHigh, price) }
+    if (nc.barsSince > 8) return NO({ ...nc, state: 'EXPIRED' })
+    if (ctx.side === 'LONG' && price < ctx.level - T) return NO({ ...nc, state: 'FAILED' })
+    if (ctx.side === 'LONG' && price <= ctx.level + T && price >= ctx.level - T) return NO({ ...nc, state: 'WAIT_CONFIRM' })
+    return NO(nc)
+  }
+  if (ctx.state === 'WAIT_CONFIRM') {
+    const prev = bars[bars.length - 2]
+    if (ctx.side === 'LONG' && prev > ctx.level && price > ctx.level) {
+      const stop = Math.max(ctx.retestLow - atr * 0.1, price * 0.97)
+      const r = price - stop, rTarget = price + 1.5 * r
+      const s41t = ss41Target(price, 'UP', vp), em = price + ss40ExpectedMove(bars)
+      const target = Math.max(rTarget, s41t ? Math.min(s41t, em) : em)
+      return { entry: true, newCtx: { ...ctx, state: 'WAIT_BREAK' as const }, stop, target, reason: `SS39 break-retest: broke ${ctx.level.toFixed(2)}, retested, confirmed @ ${prev.toFixed(2)}` }
+    }
+    if (ctx.side === 'LONG' && price < ctx.level - T) return NO({ ...ctx, state: 'FAILED' })
+    return NO(ctx)
+  }
+  return NO({ state: 'WAIT_BREAK', level: 0, side: null, barsSince: 0, retestLow: price, retestHigh: price })
+}
+
+/* ── SS52 Zanger breakout ── */
+export function ss52ZangerBreakout(bars: number[], price: number) {
+  if (bars.length < ZANGER_BASE_MIN_BARS + 3) return null
+  const base = bars.slice(0, -2)
+  const pivot = Math.max(...base)
+  const prev = bars[bars.length - 2], prev2 = bars[bars.length - 3]
+  if (!(prev > pivot && prev2 <= pivot)) return null
+  const recentRanges: number[] = []
+  for (let i = Math.max(1, bars.length - 12); i < bars.length; i++) recentRanges.push(Math.abs(bars[i] - bars[i - 1]))
+  const priorRanges = recentRanges.slice(0, -1)
+  const avgRange = priorRanges.length ? priorRanges.reduce((a, b) => a + b, 0) / priorRanges.length : 0
+  const breakRange = Math.abs(price - prev2)
+  if (avgRange > 0 && breakRange < avgRange * ZANGER_EXPANSION_MULT) return null
+  const grade: 'A'|'B' = (avgRange > 0 && breakRange >= avgRange * ZANGER_EXPANSION_MULT * 1.4) ? 'A' : 'B'
+  const stop = Math.max(pivot * 0.999, price * (1 - ZANGER_FAIL_STOP_PCT))
+  const thrust = avgRange > 0 ? (breakRange / avgRange) : ZANGER_EXPANSION_MULT
+  return { buy: true, pivot, stop, reason: `SS52 Zanger breakout: cleared base pivot $${pivot.toFixed(2)} on ${thrust.toFixed(1)}x range thrust, grade ${grade}.`, grade }
+}
+
+export function ss52SwitchTrigger(pos: Position, price: number, vwap: number, spyChange: number, changePct: number, threshold: number): boolean {
+  const dropPct = pos.avgPrice > 0 ? (pos.avgPrice - price) / pos.avgPrice : 0
+  if (dropPct <= threshold) return false
+  if (price >= vwap) return false
+  if (changePct - spyChange >= 0) return false
+  if (spyChange <= -threshold * 100) return false
+  return true
+}
+
+/* ── SS53 regime classification ── */
+export function classifyRegime(spyChange: number, greenFrac: number, _dualConf: number): Regime {
+  if (spyChange < RG_MIXEDRED_SPY && greenFrac <= RG_FULLRED_BREADTH) return 'FULL_RED'
+  if (spyChange >= RG_FULLGREEN_SPY && greenFrac >= RG_FULLGREEN_BREADTH) return 'FULL_GREEN'
+  if (spyChange >= RG_SEMIGREEN_SPY) return 'SEMI_GREEN'
+  if (spyChange >= RG_MIXEDRED_SPY) return 'MIXED_RED'
+  return 'FULL_RED'
+}
+
+/* ── Baseline entry ── */
+export interface EntrySignal { action: 'BUY' | 'HOLD'; confidence: number; signal: string; reasoning: string; allocPct: number; urgency: 'NORMAL' | 'LOW' }
+
+export function troyBaseline(bars: number[], cashPct: number, targetPct: number, returnPct: number, session: string, isSafe = false): EntrySignal {
+  const HOLD: EntrySignal = { action: 'HOLD', confidence: 0, signal: 'NO_SIGNAL', reasoning: 'No signal.', allocPct: 0, urgency: 'LOW' }
+  if (bars.length < 4) return { ...HOLD, signal: 'INSUFFICIENT_DATA' }
+  if (cashPct <= 12) return { ...HOLD, signal: 'LOW_CASH' }
+  const rsi = calcRSI(bars, Math.min(14, bars.length - 1))
+  const ema5 = calcEMA(bars, Math.min(5, bars.length)), ema20 = calcEMA(bars, Math.min(20, bars.length))
+  const mom = calcMomentum(bars, Math.min(5, bars.length - 1))
+  const vol = bars.length >= 2 && bars[bars.length-2] > 0 ? Math.abs(bars[bars.length-1]-bars[bars.length-2])/bars[bars.length-2]*100 : 0
+  const gap = targetPct - returnPct
+  const agg = isSafe ? 0.5 : Math.min(2.0, Math.max(0.8, 1 + gap / Math.max(targetPct, 1)))
+  if (isSafe) {
+    if (rsi < 42 && mom > -1) return { action: 'BUY', confidence: 72, signal: 'SAFE_OVERSOLD', reasoning: `Safe RSI ${rsi.toFixed(0)} oversold.`, allocPct: 40, urgency: 'NORMAL' }
+    if (ema5 > ema20 && rsi < 60) return { action: 'BUY', confidence: 65, signal: 'SAFE_TREND', reasoning: `Safe uptrend RSI ${rsi.toFixed(0)}.`, allocPct: 35, urgency: 'NORMAL' }
+    return HOLD
+  }
+  const uptrend = ema5 >= ema20
+  if (rsi < 38 && uptrend && mom > -0.3) return { action: 'BUY', confidence: Math.min(93, 62+(38-rsi)*1.4*agg), signal: 'RSI_OVERSOLD_BOUNCE', reasoning: `RSI ${rsi.toFixed(0)} oversold in uptrend — pullback buy.`, allocPct: Math.min(38, 14+(38-rsi)*0.8), urgency: 'NORMAL' }
+  if (ema5 > ema20*1.001 && mom > 0.4 && rsi > 44 && rsi < 67) return { action: 'BUY', confidence: Math.min(88, 52+mom*9*agg), signal: 'MOMENTUM_BREAKOUT', reasoning: `EMA cross + mom +${mom.toFixed(2)}%, RSI ${rsi.toFixed(0)}.`, allocPct: Math.min(32, 14+mom*4), urgency: 'NORMAL' }
+  if (uptrend && vol > 0.6 && mom > 0.25 && rsi > 48 && rsi < 70) return { action: 'BUY', confidence: 70, signal: 'VOLATILITY_BREAKOUT', reasoning: `Vol expansion ${vol.toFixed(2)}% in uptrend.`, allocPct: 18, urgency: 'NORMAL' }
+  if (agg > 1.35 && uptrend && mom > 0.15 && rsi > 42 && rsi < 65 && session === 'regular') return { action: 'BUY', confidence: 66, signal: 'AGGRESSIVE_MOMENTUM', reasoning: `Behind target ${gap.toFixed(1)}%, uptrend RSI ${rsi.toFixed(0)}.`, allocPct: Math.min(28, 12+agg*4), urgency: 'NORMAL' }
+  return HOLD
+}
+
+export function rankCandidates(watchlist: string[], quotes: Record<string, Quote>, bars: Record<string, number[]>, spyChange: number, targetPct: number, returnPct: number): string[] {
+  const scored: { sym: string; score: number }[] = []
+  for (const sym of watchlist) {
+    if (sym === 'SPY' || SAFE_STOCKS.includes(sym)) continue
+    const q = quotes[sym]; if (!q || q.price <= 0) continue
+    const b = bars[sym] || []; if (b.length < 6) continue
+    const rs = q.changePct - spyChange
+    if (rs <= 0 || q.changePct <= 0) continue
+    if (q.price <= vwapProxy(b)) continue
+    const base = troyBaseline(b, 100, targetPct, returnPct, 'regular', false)
+    if (base.action !== 'BUY' || base.confidence < 63) continue
+    const mom = calcMomentum(b, Math.min(5, b.length - 1))
+    scored.push({ sym, score: base.confidence * (1 + Math.max(0, rs)) * (1 + Math.max(0, mom)) })
+  }
+  return scored.sort((a, b) => b.score - a.score).map(s => s.sym)
+}===== ./src/indicators.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   INDICATORS — ported verbatim from the browser engine.
+
+   Nothing here has been changed except MIN_SLICE (see below). It is a straight
+   move so that the server and the UI compute identical numbers from identical
+   inputs. If you ever need to prove the port is faithful, diff this file first.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+import type { VAP } from './types.js'
+
+export const FRACTIONAL_DECIMALS = 5
+
+/* $1, not $5. At a $50 budget the ALGO_X route sizes positions at roughly $2.92
+   (sleeve 35 x per-name cap 8.3%), and a $5 floor rejected every one of them —
+   so a $50 account could not trade at all in the mode it actually runs in.
+   Fractional shares fill exact dollar amounts, so the floor was always
+   arbitrary; it exists to stop dust positions, and $1 does that fine. */
+export const MIN_SLICE = 1
+
+export function floorToPrecision(x: number, dp: number) { const f = 10 ** dp; return Math.floor(x * f) / f }
+
+export function ss42Slice(notional: number, price: number): { shares: number; filled: number } {
+  if (price <= 0 || notional <= 0) return { shares: 0, filled: 0 }
+  const shares = floorToPrecision(notional / price, FRACTIONAL_DECIMALS)
+  const filled = shares * price
+  if (filled < MIN_SLICE) return { shares: 0, filled: 0 }
+  return { shares, filled }
+}
+
+export function fmtShares(n: number): string { return Number.isInteger(n) ? String(n) : (+n.toFixed(4)).toString() }
+
+export function calcRSI(prices: number[], period = 14): number {
+  if (prices.length < period + 1) return 50
+  let gains = 0, losses = 0
+  for (let i = prices.length - period; i < prices.length; i++) { const d = prices[i] - prices[i - 1]; if (d > 0) gains += d; else losses += Math.abs(d) }
+  const ag = gains / period, al = losses / period
+  if (al === 0) return 100
+  return 100 - (100 / (1 + ag / al))
+}
+
+export function calcEMA(prices: number[], period: number): number {
+  if (prices.length === 0) return 0
+  if (prices.length < period) return prices[prices.length - 1]
+  const k = 2 / (period + 1)
+  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period
+  for (let i = period; i < prices.length; i++) ema = prices[i] * k + ema * (1 - k)
+  return ema
+}
+
+export function calcMomentum(prices: number[], period = 5): number {
+  if (prices.length < period + 1) return 0
+  const r = prices[prices.length - 1], o = prices[prices.length - 1 - period]
+  return o > 0 ? ((r - o) / o) * 100 : 0
+}
+
+export function calcATR(prices: number[], period = 14): number {
+  if (prices.length < 2) return (prices[0] ?? 0) * 0.01
+  const trs: number[] = []
+  for (let i = 1; i < prices.length; i++) trs.push(Math.abs(prices[i] - prices[i - 1]))
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / Math.min(period, trs.length)
+}
+
+export function calcStdDev(vals: number[]): number {
+  if (vals.length < 2) return 0
+  const m = vals.reduce((a, b) => a + b, 0) / vals.length
+  return Math.sqrt(vals.reduce((s, v) => s + (v - m) ** 2, 0) / vals.length)
+}
+
+export function vwapProxy(bars: number[]): number {
+  return bars.length ? bars.reduce((a, b) => a + b, 0) / bars.length : 0
+}
+
+/* ── SS41 volume profile ── */
+export interface VolumeProfile { poc: number; vah: number; val: number; hvns: number[]; lvns: number[] }
+
+export function buildVolumeProfile(bars: number[]): VolumeProfile | null {
+  if (bars.length < 10) return null
+  const mn = Math.min(...bars), mx = Math.max(...bars), range = mx - mn
+  if (range < 0.0001) return null
+  const BINS = 20, binSize = range / BINS, counts = new Array(BINS).fill(0)
+  for (const p of bars) counts[Math.min(BINS - 1, Math.floor((p - mn) / binSize))]++
+  const pocIdx = counts.indexOf(Math.max(...counts)), poc = mn + (pocIdx + 0.5) * binSize
+  let vLo = pocIdx, vHi = pocIdx, captured = counts[pocIdx]
+  while (captured / bars.length < 0.70 && (vLo > 0 || vHi < BINS - 1)) {
+    const aLo = vLo > 0 ? counts[vLo - 1] : 0, aHi = vHi < BINS - 1 ? counts[vHi + 1] : 0
+    if (aLo >= aHi && vLo > 0) { vLo--; captured += counts[vLo] } else if (vHi < BINS - 1) { vHi++; captured += counts[vHi] } else break
+  }
+  const avg = bars.length / BINS, hvns: number[] = [], lvns: number[] = []
+  for (let i = 1; i < BINS - 1; i++) {
+    const price = mn + (i + 0.5) * binSize
+    if (counts[i] > avg * 1.5 && counts[i] >= counts[i-1] && counts[i] >= counts[i+1]) hvns.push(price)
+    if (counts[i] < avg * 0.5 && counts[i] <= counts[i-1] && counts[i] <= counts[i+1]) lvns.push(price)
+  }
+  return { poc, vah: mn + (vHi + 1) * binSize, val: mn + vLo * binSize, hvns, lvns }
+}
+
+export function ss41BreakQuality(bp: number, dir: 'UP' | 'DOWN', vp: VolumeProfile | null): 'A' | 'B' | 'SKIP' {
+  if (!vp) return 'B'
+  const z = Math.abs(vp.vah - vp.val) / 3
+  if (dir === 'UP') {
+    if (vp.hvns.some(h => h > bp && h - bp < z * 2)) return 'SKIP'
+    if (vp.lvns.some(l => l > bp && l - bp < z * 1.5)) return 'A'
+  } else {
+    if (vp.hvns.some(h => h < bp && bp - h < z * 2)) return 'SKIP'
+    if (vp.lvns.some(l => l < bp && bp - l < z * 1.5)) return 'A'
+  }
+  return 'B'
+}
+
+export function ss41Target(entry: number, dir: 'UP' | 'DOWN', vp: VolumeProfile | null): number | null {
+  if (!vp) return null
+  if (dir === 'UP') { const n = vp.hvns.filter(h => h > entry).sort((a, b) => a - b)[0]; return n ?? (vp.vah > entry ? vp.vah : null) }
+  const n = vp.hvns.filter(h => h < entry).sort((a, b) => b - a)[0]
+  return n ?? (vp.val < entry ? vp.val : null)
+}
+
+export function ss40ExpectedMove(bars: number[]): number {
+  if (bars.length < 5) return bars[bars.length - 1] * 0.01
+  const rets = bars.slice(1).map((p, i) => Math.log(p / bars[i]))
+  const sd = calcStdDev(rets)
+  return bars[bars.length - 1] * (sd * Math.sqrt(252 * 75)) * Math.sqrt(1 / 252)
+}
+===== ./src/index.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   TROY ENGINE — the always-on loop.
+
+   This is what makes "no overnight exposure" a true statement. Previously the
+   engine only ran while a browser tab was open, so if the tab was closed at
+   15:00 the 15:55 flatten never fired and positions carried over silently.
+
+   Cadence:
+     * every 5s during premarket / regular / afterhours
+     * idle poll every 60s when the market is closed
+     * bar history flushed to Postgres every 60s, cleared on a new ET day
+     * entry-rejection telemetry flushed every 15 minutes
+     * daily emails after the flatten
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+import 'dotenv/config'
+import cron from 'node-cron'
+import { randomUUID } from 'node:crypto'
+import { runEngine } from './engine.js'
+import { getQuotes, getMarketSession, etMinutesNow, etDayKey } from './quotes.js'
+import { sendDailyEmails } from './email.js'
+import {
+  activeUsers, loadRefs, saveUserTick, loadBars, saveBars, clearBars,
+  claimLock, heartbeat, log,
+} from './db.js'
+import { STOCK_LIBRARY, SAFE_STOCKS } from './rules.js'
+
+/* 5s, was 8s. Note that bars are tick prices, so every `bars.length >= N`
+   threshold in the rules is implicitly a time window — at 5s, ten bars is 50
+   seconds rather than 80. Patterns form faster on thinner evidence. Expect more
+   trades; more is not the same as better. Watch the telemetry. */
+const TICK_MS = 5000
+const IDLE_MS = 60000
+const HOLDER = process.env.RAILWAY_REPLICA_ID ?? randomUUID()
+
+let bars: Record<string, number[]> = {}
+let barsDay = 0
+let lastBarFlush = 0
+let running = false
+
+/* Rejection reasons accumulate across ticks and flush every 15 minutes.
+   Per-tick would be thousands of rows a session; per-quarter-hour is readable. */
+let rejAcc: Record<string, Record<string, number>> = {}
+let lastGate: Record<string, unknown> = {}
+let lastRejFlush = 0
+
+async function tick() {
+  if (running) return          // never overlap; a slow quote fetch must not stack
+  running = true
+  try {
+    if (!(await claimLock(HOLDER))) {
+      await log('warn', 'another instance holds the engine lock — standing down this tick')
+      return
+    }
+
+    const { session } = getMarketSession()
+    if (session === 'closed') return
+
+    const users = await activeUsers()
+    if (!users.length) return
+
+    const etMin = etMinutesNow()
+    const today = etDayKey()
+
+    // New trading day: yesterday's bar history is not comparable, so drop it.
+    if (barsDay !== today) {
+      await clearBars()
+      bars = {}; barsDay = today
+      await log('info', `new session ${today} — bar history cleared`)
+    }
+
+    // One quote fetch for everyone. Same SPY print for every user, which is what
+    // stops two accounts landing in different regimes on the same afternoon.
+    const tickers = [...new Set<string>([
+      'SPY', 'QQQ',
+      ...users.flatMap(u => u.state.stocks ?? []),
+      ...users.flatMap(u => u.state.positions.map(p => p.ticker)),
+      ...users.flatMap(u => u.state.roster ?? []),
+      ...users.flatMap(u => u.state.bench ?? []),
+      ...(users.some(u => u.state.aiPicksStocks) ? STOCK_LIBRARY.map(s => s.sym) : []),
+      ...(users.some(u => !u.state.allIn) ? SAFE_STOCKS : []),
+    ])]
+
+    const { quotes, dataSource, failed } = await getQuotes(tickers)
+    if (!Object.keys(quotes).length) { await log('error', 'quote fetch returned nothing — skipping tick'); return }
+    if (failed.length > 8) await log('warn', `${failed.length} symbols failed to quote`, { failed: failed.slice(0, 12) })
+
+    // Append to shared bar history.
+    for (const [sym, q] of Object.entries(quotes)) {
+      if (q.price <= 0) continue
+      const a = bars[sym] ?? (bars[sym] = [])
+      if (a.length === 0 || a[a.length - 1] !== q.price) a.push(q.price)
+      if (a.length > 120) a.shift()
+    }
+
+    for (const u of users) {
+      try {
+        const refs = await loadRefs(u.user_id)
+        const out = runEngine({ state: u.state, refs, quotes, bars, session, etMin })
+        const row = out.state.dailyLog.find(d => d.day === today) ?? null
+        await saveUserTick(u.user_id, out.state, out.refs, out.newTrades, today, row)
+        if (out.execLog.length) await log('info', `[${u.email}] ${out.execLog.join(' | ')}`, { dataSource }, u.user_id)
+        const acc = rejAcc[u.user_id] ?? (rejAcc[u.user_id] = {})
+        for (const [k, v] of Object.entries(out.rejects)) acc[k] = (acc[k] ?? 0) + v
+        lastGate[u.user_id] = out.gate
+      } catch (e: any) {
+        // One user's bad state must never stop the others from trading.
+        await log('error', `engine failed for user`, { err: String(e?.stack ?? e) }, u.user_id)
+      }
+    }
+
+    if (Date.now() - lastBarFlush > 60000) { lastBarFlush = Date.now(); await saveBars(bars, today) }
+
+    /* Every 15 minutes, write why entries were rejected. If the engine takes no
+       trades, this is the difference between "the filters are too tight" and
+       "nothing qualified" — which look identical from the outside. */
+    if (session === 'regular' && Date.now() - lastRejFlush > 15 * 60 * 1000) {
+      lastRejFlush = Date.now()
+      for (const u of users) {
+        const acc = rejAcc[u.user_id]
+        if (!acc) continue
+        const reasons = Object.fromEntries(
+          Object.entries(acc).sort((a, b) => b[1] - a[1]).slice(0, 12)
+        )
+        const top = Object.entries(reasons).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(' ')
+        await log('info', `[${u.email}] entry rejects (15m): ${top || 'none'}`, { etMin, gate: lastGate[u.user_id], reasons }, u.user_id)
+      }
+      rejAcc = {}
+    }
+
+    await heartbeat(HOLDER)
+  } catch (e: any) {
+    await log('error', 'tick failed', { err: String(e?.stack ?? e) })
+  } finally {
+    running = false
+  }
+}
+
+async function main() {
+  await log('info', `Troy engine starting — holder ${HOLDER}`)
+  const restored = await loadBars()
+  bars = restored.bars; barsDay = restored.day ?? etDayKey()
+  await log('info', `restored bar history for ${Object.keys(bars).length} symbols`)
+
+  // Daily report at 16:05 ET, after the 15:55 flatten has settled.
+  cron.schedule('5 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, { timezone: 'America/New_York' })
+
+  const loop = async () => {
+    const { session } = getMarketSession()
+    await tick()
+    setTimeout(loop, session === 'closed' ? IDLE_MS : TICK_MS)
+  }
+  loop()
+}
+
+process.on('unhandledRejection', e => { log('error', 'unhandled rejection', { err: String(e) }) })
+process.on('uncaughtException',  e => { log('error', 'uncaught exception',  { err: String(e?.stack ?? e) }) })
+
+main()
+===== ./src/db.ts =====
+/* ═══════════════════════════════════════════════════════════════════════════
+   DB — Neon Postgres access.
+
+   Everything the engine needs to survive a restart lives here. The browser kept
+   bar history and cooldowns in React refs, which is why every refresh reset the
+   pattern detection. Here they are rows.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+import { neon } from '@neondatabase/serverless'
+import type { DaySummary, EngineRefs, PortfolioState, Trade, UserRow } from './types.js'
+import { emptyRefs } from './types.js'
+
+const sql = neon(process.env.DATABASE_URL!)
+
+/* Neon's free tier autosuspends and drops connections. Without a retry, a dropped
+   write in saveUserTick meant the engine computed a decision — possibly a fill —
+   and then silently lost it, leaving cash and positions out of sync with what
+   actually happened. Three of those showed up in the first week. */
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn() } catch (e) {
+      lastErr = e
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, 250 * 2 ** i))
+    }
+  }
+  console.error(`[error] ${label} failed after ${attempts} attempts`, lastErr)
+  throw lastErr
+}
+
+export async function activeUsers(): Promise<UserRow[]> {
+  const rows = await sql`
+    SELECT user_id, email, display_name, active, email_enabled, state
+    FROM portfolios WHERE active = TRUE` as any[]
+  return rows as UserRow[]
+}
+
+export async function loadRefs(userId: string): Promise<EngineRefs> {
+  const rows = await sql`SELECT refs FROM engine_state WHERE user_id = ${userId}` as any[]
+  if (!rows.length) return emptyRefs()
+  return { ...emptyRefs(), ...(rows[0].refs ?? {}) }
+}
+
+export async function saveUserTick(userId: string, state: PortfolioState, refs: EngineRefs, trades: Trade[], day: number, row: DaySummary | null) {
+  await withRetry('saveUserTick.portfolio', () => sql`
+    UPDATE portfolios SET state = ${JSON.stringify(state)}::jsonb, updated_at = now()
+    WHERE user_id = ${userId}`)
+  await withRetry('saveUserTick.refs', () => sql`
+    INSERT INTO engine_state (user_id, refs, updated_at) VALUES (${userId}, ${JSON.stringify(refs)}::jsonb, now())
+    ON CONFLICT (user_id) DO UPDATE SET refs = EXCLUDED.refs, updated_at = now()`)
+  for (const t of trades) {
+    await withRetry(`saveUserTick.trade.${t.ticker}`, () => sql`
+      INSERT INTO trades (id, user_id, day, ticker, action, shares, price, total, pnl, signal, sleeve, conviction, reasoning, ts)
+      VALUES (${t.id}, ${userId}, ${day}, ${t.ticker}, ${t.action}, ${t.shares}, ${t.price}, ${t.total},
+              ${t.pnl ?? null}, ${t.signal ?? null}, ${t.sleeve ?? null}, ${t.conviction}, ${t.reasoning}, to_timestamp(${t.timestamp / 1000}))
+      ON CONFLICT (id) DO NOTHING`)
+  }
+  if (row) {
+    await withRetry('saveUserTick.dailyLog', () => sql`
+      INSERT INTO daily_log (user_id, day, date, row, updated_at)
+      VALUES (${userId}, ${row.day}, ${row.date}::date, ${JSON.stringify(row)}::jsonb, now())
+      ON CONFLICT (user_id, day) DO UPDATE SET row = EXCLUDED.row, updated_at = now()`)
+  }
+}
+
+export async function loadBars(): Promise<{ bars: Record<string, number[]>; day: number | null }> {
+  const rows = await sql`SELECT ticker, bars, session_day FROM bar_history` as any[]
+  const bars: Record<string, number[]> = {}
+  let day: number | null = null
+  for (const r of rows) { bars[r.ticker] = r.bars ?? []; day = r.session_day }
+  return { bars, day }
+}
+
+export async function saveBars(bars: Record<string, number[]>, day: number) {
+  const entries = Object.entries(bars)
+  for (let i = 0; i < entries.length; i += 50) {
+    const chunk = entries.slice(i, i + 50)
+    await Promise.all(chunk.map(([ticker, arr]) => withRetry(`saveBars.${ticker}`, () => sql`
+      INSERT INTO bar_history (ticker, bars, session_day, updated_at)
+      VALUES (${ticker}, ${JSON.stringify(arr)}::jsonb, ${day}, now())
+      ON CONFLICT (ticker) DO UPDATE SET bars = EXCLUDED.bars, session_day = EXCLUDED.session_day, updated_at = now()`)
+      .catch(() => { /* bar history is rebuildable; never fail a tick over it */ })))
+  }
+}
+
+export async function clearBars() { await sql`DELETE FROM bar_history` }
+
+export async function log(level: 'info'|'warn'|'error', message: string, detail?: unknown, userId?: string) {
+  const line = `[${level}] ${message}`
+  if (level === 'error') console.error(line, detail ?? ''); else console.log(line, detail ?? '')
+  try {
+    await sql`INSERT INTO engine_log (user_id, level, message, detail) VALUES (${userId ?? null}, ${level}, ${message}, ${detail ? JSON.stringify(detail) : null}::jsonb)`
+  } catch { /* logging must never break the loop */ }
+}
+
+/* Single-writer lock. Railway can briefly run two instances across a deploy;
+   two engines trading the same book would double-fill and corrupt cash. */
+export async function claimLock(holder: string): Promise<boolean> {
+  const rows = await withRetry('claimLock', () => sql`
+    INSERT INTO engine_lock (id, holder, heartbeat) VALUES (1, ${holder}, now())
+    ON CONFLICT (id) DO UPDATE SET holder = ${holder}, heartbeat = now()
+    WHERE engine_lock.holder = ${holder} OR engine_lock.heartbeat < now() - interval '90 seconds'
+    RETURNING holder`) as any[]
+  return rows.length > 0
+}
+
+export async function heartbeat(holder: string) {
+  await sql`UPDATE engine_lock SET heartbeat = now() WHERE id = 1 AND holder = ${holder}`
+}
+
+/* Daily email support */
+export async function unemailedDays(day: number) {
+  const rows = await sql`
+    SELECT d.user_id, d.day, d.row, p.email, p.display_name, p.email_enabled, p.state
+    FROM daily_log d JOIN portfolios p ON p.user_id = d.user_id
+    WHERE d.day = ${day} AND d.emailed = FALSE AND p.email_enabled = TRUE` as any[]
+  return rows
+}
+
+export async function markEmailed(userId: string, day: number) {
+  await sql`UPDATE daily_log SET emailed = TRUE WHERE user_id = ${userId} AND day = ${day}`
+}
+
+export async function dayTrades(userId: string, day: number) {
+  return await sql`SELECT * FROM trades WHERE user_id = ${userId} AND day = ${day} ORDER BY ts ASC` as any[]
+}

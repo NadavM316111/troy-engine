@@ -196,8 +196,8 @@ async function main() {
   await log('info', `restored bar history for ${Object.keys(bars).length} symbols`)
 
   const tz = { timezone: 'America/New_York' }
-  // Daily report at 16:05 ET, after the 15:55 flatten has settled.
-  cron.schedule('5 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, tz)
+  // Daily report at 16:40 ET, after the 16:30 self-reflection, so the email shows today's.
+  cron.schedule('40 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, tz)
   cron.schedule('30 9 * * 1-5',  () => { checkpoint('09:30') }, tz)
   cron.schedule('30 11 * * 1-5', () => { checkpoint('11:30') }, tz)
   cron.schedule('0 14 * * 1-5',  () => { checkpoint('14:00') }, tz)
