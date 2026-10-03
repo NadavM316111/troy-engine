@@ -14,6 +14,7 @@
      * bar history flushed to Postgres every 60s, cleared on a new ET day
      * entry-rejection telemetry flushed every 15 minutes
      * daily emails after the flatten
+     * swing book: decides at 16:20 ET, fills at 09:35 ET (see swing/run.ts)
    ═══════════════════════════════════════════════════════════════════════════ */
 
 import 'dotenv/config'
@@ -28,6 +29,7 @@ import {
 } from './db.js'
 import { STOCK_LIBRARY, SAFE_STOCKS } from './rules.js'
 import { buildScorecard, scoreLine } from './stats.js'
+import { afterClose as swingAfterClose, atOpen as swingAtOpen } from './swing/run.js'
 
 /* 10s, was 5s. Bars are tick prices, so every `bars.length >= N` threshold in
    the rules is implicitly a time window. At 10s, ten bars is 100 seconds rather
@@ -198,6 +200,17 @@ async function main() {
   const tz = { timezone: 'America/New_York' }
   // Daily report at 16:40 ET, after the 16:30 self-reflection, so the email shows today's.
   cron.schedule('40 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, tz)
+  /* Swing book. Decide after the close, fill at the next open. The retries
+     make a missed run (restart, slow data) self-heal; both jobs are no-ops
+     once they have done today's work, and only the lock holder runs them. */
+  const swingGuard = (fn: () => Promise<void>) => async () => { try { if (await claimLock(HOLDER)) await fn() } catch (e: any) { await log('error', 'swing job failed', { err: String(e?.stack ?? e) }) } }
+  cron.schedule('20,35,50 16 * * 1-5', swingGuard(swingAfterClose), tz)
+  cron.schedule('*/15 17-19 * * 1-5', swingGuard(swingAfterClose), tz)
+  cron.schedule('35,45,55 9 * * 1-5', swingGuard(swingAtOpen), tz)
+  cron.schedule('*/10 10-11 * * 1-5', swingGuard(swingAtOpen), tz)
+  // On boot, catch up anything a restart may have skipped.
+  swingGuard(swingAtOpen)().then(swingGuard(swingAfterClose))
+
   cron.schedule('30 9 * * 1-5',  () => { checkpoint('09:30') }, tz)
   cron.schedule('30 11 * * 1-5', () => { checkpoint('11:30') }, tz)
   cron.schedule('0 14 * * 1-5',  () => { checkpoint('14:00') }, tz)

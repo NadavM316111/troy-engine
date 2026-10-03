@@ -8,7 +8,14 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "migrate": "psql \"$DATABASE_URL\" -f src/schema.sql",
-    "stats": "tsx src/stats-cli.ts"
+    "stats": "tsx src/stats-cli.ts",
+    "q:fetch": "tsx src/quant/fetch.ts",
+    "q:research": "tsx src/quant/research.ts",
+    "q:backtest": "tsx src/quant/backtest.ts",
+    "q:daily": "tsx src/quant/daily-fetch.ts",
+    "q:swing": "tsx src/quant/swing.ts",
+    "q:parity": "tsx src/quant/swing-parity.ts",
+    "q:winrate": "tsx src/quant/winrate.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",

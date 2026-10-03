@@ -1,3 +1,8 @@
 node_modules
 dist
 .env
+
+quant/data/
+quant/out/
+troy_engine_dump.txt
+quant/daily/

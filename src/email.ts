@@ -10,6 +10,7 @@ import type { DaySummary } from './types.js'
 import { dayTrades, markEmailed, unemailedDays, log } from './db.js'
 import { etDayKey } from './quotes.js'
 import { buildScorecard, WIN_RATE_GOAL, type Scorecard, type Score } from './stats.js'
+import { swingSection } from './swing/report.js'
 
 const resend = new Resend(process.env.RESEND_API_KEY!)
 const FROM = process.env.EMAIL_FROM ?? 'Troy <troy@troyai.co>'
@@ -57,7 +58,7 @@ function scorecardHtml(c: Scorecard): string {
   </div>`
 }
 
-function buildHtml(name: string, row: DaySummary, trades: any[], state: any, card: Scorecard | null): string {
+function buildHtml(name: string, row: DaySummary, trades: any[], state: any, card: Scorecard | null, swing = ''): string {
   const up = row.pnl >= 0
   const col = up ? '#2d7a4f' : '#c0392b'
   const fills = trades.map(t => {
@@ -97,6 +98,7 @@ function buildHtml(name: string, row: DaySummary, trades: any[], state: any, car
     </table>
   </div>
   ${card ? scorecardHtml(card) : ''}
+  ${swing}
   ${fills ? `<div style="padding:0 28px 20px">
     <div style="font-size:11px;letter-spacing:.1em;color:#999;text-transform:uppercase;margin-bottom:8px">Fills</div>
     <table style="width:100%;border-collapse:collapse;font-size:12px">${fills}</table>
@@ -125,7 +127,9 @@ export async function sendDailyEmails() {
       const trades = await dayTrades(r.user_id, day)
       let card: Scorecard | null = null
       try { card = await buildScorecard(r.user_id) } catch (e: any) { await log('warn', 'scorecard failed', { err: String(e?.message ?? e) }, r.user_id) }
-      const html = buildHtml(r.display_name ?? 'there', row, trades, r.state, card)
+      let swing = ''
+      try { swing = await swingSection(r.user_id) } catch (e: any) { await log('warn', 'swing section failed', { err: String(e?.message ?? e) }, r.user_id) }
+      const html = buildHtml(r.display_name ?? 'there', row, trades, r.state, card, swing)
       await resend.emails.send({
         from: FROM, to: r.email,
         subject: `Troy · ${row.label} · ${money(row.pnl)} (${pct(row.pnlPct)})${card?.allTime.n ? ` · ${card.allTime.winRate}% win` : ''}`,

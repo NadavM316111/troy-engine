@@ -1,0 +1,12 @@
+{
+  "budget": 1000000,
+  "targetReturn": 20,
+  "stocks": [],
+  "aiPicksStocks": true,
+  "safeAlloc": 0,
+  "riskAlloc": 100,
+  "allIn": true,
+  "zangerMode": false,
+  "beastMode": false,
+  "regimeRouter": true
+}
