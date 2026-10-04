@@ -39,6 +39,7 @@ export interface Position {
   peakSince?: number; preTrailLow?: number
   pivot?: number; pyramids?: number; isZanger?: boolean
   frozenStop?: number; benchExtended?: boolean
+  fillPrice?: number   // entry fill, the SS55 anchor (H10 / SS55 v1.1 F1)
   bandLine?: number; sellLine?: number
   escalated?: boolean; escUsed?: boolean; escDeadline?: number
   floorTouchedAt?: number

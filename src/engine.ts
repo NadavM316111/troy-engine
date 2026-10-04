@@ -244,7 +244,7 @@ export function runEngine(input: EngineInput): EngineOutput {
       newTrades.push({ id: genId(), ticker: pos.ticker, action: 'SELL', shares: sellShares, price, total: proceeds, reasoning: ss37.reasoning, timestamp: Date.now(), pnl, conviction: 'HIGH', signal: ss37.signal, sleeve: 'MAIN' })
       execLog.push(`BANK ${pos.ticker} 1/3`)
       notifications.push(`${pos.ticker} +${(((price-pos.avgPrice)/pos.avgPrice)*100).toFixed(1)}% — banked, runner live`)
-      positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, shares: keep, value: keep*price, pnl: keep*(price-p.avgPrice), pnlPct: ((price-p.avgPrice)/p.avgPrice)*100, currentPrice: price, highWatermark: newPeak, partialDone: true, stopLevel: ss37.updatedStopLevel, bars: b.slice(-20), peakSince: Date.now(), preTrailLow: Math.min(...b.slice(-6)) })
+      positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, shares: keep, value: keep*price, pnl: keep*(price-p.avgPrice), pnlPct: ((price-p.avgPrice)/p.avgPrice)*100, currentPrice: price, highWatermark: newPeak, partialDone: true, stopLevel: Math.max(p.stopLevel, ss37.updatedStopLevel, p.frozenStop ?? 0), bars: b.slice(-20), peakSince: Date.now(), preTrailLow: Math.min(...b.slice(-6)) })
       continue
     }
     if (ss37.action === 'STOP' || ss37.action === 'RUNNER_STOP') {
@@ -258,18 +258,30 @@ export function runEngine(input: EngineInput): EngineOutput {
 
     if (!pos.isSafe) {
       const age = Date.now() - pos.entryTime
-      const gain = (price - pos.avgPrice) / pos.avgPrice
+      /* SS55 v1.1 F1 (H10 anchor integrity): the anchor must be the entry fill.
+         avgPrice only diverges from the fill after a pyramid add, which v1.1
+         logs as ANCHOR_AMBIGUOUS and still evaluates on the original fill. */
+      const anchor = pos.fillPrice ?? pos.avgPrice
+      const anchorTag = pos.fillPrice === undefined ? 'anchor=legacy' : pos.pyramids ? 'ANCHOR_AMBIGUOUS' : Math.abs(pos.avgPrice - pos.fillPrice) > 1e-6 ? 'DEFECT_H10' : 'anchor=ok'
+      if (anchorTag === 'DEFECT_H10' && age >= R.SS55_HOUR_MS) execLog.push(`DEFECT_H10 ${pos.ticker}: SS55 anchor avg $${pos.avgPrice.toFixed(4)} != fill $${pos.fillPrice!.toFixed(4)}, evaluated on fill`)
+      const gain = (price - anchor) / anchor
+      /* SS55 v1.1 A3/A4 SHADOW: windowed gain (mean of recent bars, approximating
+         the last five 1-min closes at the 10s cadence) and net-of-friction gain.
+         Logged beside every SS55 decision; the decision itself is still v1.0. */
+      const win = b.slice(-30); const winPx = win.reduce((x, y) => x + y, 0) / Math.max(1, win.length)
+      const shadow = `[v1.1 shadow: tick ${(gain*100).toFixed(3)}%, window ${(((winPx - anchor) / anchor)*100).toFixed(3)}% ${((winPx - anchor) / anchor) >= R.SS55_BENCH_PCT ? 'PASS' : 'FAIL'}, net ${((gain - 0.001)*100).toFixed(3)}%, ${anchorTag}]`
       const extended = pos.benchExtended === true
       const deadline = R.SS55_HOUR_MS + (extended ? R.SS55_EXTEND_MS : 0)
       if (age >= R.SS55_HOUR_MS && gain < R.SS55_BENCH_PCT) {
         if (!extended && R.ss55Linear(b)) {
           positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, benchExtended: true, currentPrice: price, value: p.shares*price, pnl: p.shares*(price-p.avgPrice), pnlPct: gain*100 })
           notifications.push(`${pos.ticker} +30min (linear climb)`)
+          execLog.push(`SS55_EXTEND ${pos.ticker} ${shadow}`)
           continue
         }
         if (age >= deadline) {
           sellPosition(pos, price, `SS55 hourly benchmark: no +0.10% in ${extended?'90':'60'} min (${(gain*100).toFixed(2)}%). Rotating capital.`, 'SS55_BENCH', 'MEDIUM')
-          execLog.push(`BENCH ${pos.ticker}`)
+          execLog.push(`BENCH ${pos.ticker} ${shadow}`)
           continue
         }
       }
@@ -339,7 +351,7 @@ export function runEngine(input: EngineInput): EngineOutput {
           const spend = Math.min(needed, cash * 0.4, Math.max(0, cash - safeBudget * 0.3))
           const { shares, filled } = ss42Slice(spend, q.price)
           if (shares <= 0 || filled > cash * 0.9) continue
-          positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector: R.sectorOf(sym), stopLevel: q.price*0.97, targetPrice: q.price*1.15, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: true, entrySignal: sig.signal, maxFavorable: 0, weakSince: 0, frozenStop: q.price*0.97, benchExtended: false })
+          positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector: R.sectorOf(sym), stopLevel: q.price*0.97, fillPrice: q.price, targetPrice: q.price*1.15, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: true, entrySignal: sig.signal, maxFavorable: 0, weakSince: 0, frozenStop: q.price*0.97, benchExtended: false })
           cash -= filled
           newTrades.push({ id: genId(), ticker: sym, action: 'BUY', shares, price: q.price, total: filled, reasoning: `Safe alloc: ${sig.reasoning}`, timestamp: Date.now(), conviction: 'MEDIUM', signal: `SAFE_${sig.signal}`, sleeve: 'SAFE' })
           execLog.push(`SAFE BUY ${sym}`)
@@ -372,7 +384,7 @@ export function runEngine(input: EngineInput): EngineOutput {
       const addRisk = Math.max(0, (q.price - raisedStop) * addSh)
       if (openRiskP + addRisk > sleeve * (beast ? R.BEAST_RISK_BUDGET_PCT : 0.03)) continue
       cash -= addFill; deployedP += addFill; openRiskP += addRisk
-      positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, shares: newShares, avgPrice: +newAvg.toFixed(4), value: newShares*q.price, currentPrice: q.price, stopLevel: raisedStop, pyramids: (p.pyramids ?? 0) + 1 })
+      positions = positions.map(p => p.ticker !== pos.ticker ? p : { ...p, shares: newShares, avgPrice: +newAvg.toFixed(4), value: newShares*q.price, currentPrice: q.price, stopLevel: Math.max(raisedStop, p.frozenStop ?? 0), pyramids: (p.pyramids ?? 0) + 1 })
       newTrades.push({ id: genId(), ticker: pos.ticker, action: 'BUY', shares: addSh, price: q.price, total: addFill, reasoning: `${beast?'BEAST':'SS52 Zanger'} pyramid #${(pos.pyramids ?? 0)+1}: pressing a working move (+${(gain*100).toFixed(1)}%, new high). Stop raised to $${raisedStop.toFixed(2)}.`, timestamp: Date.now(), conviction: 'HIGH', signal: beast ? 'BEAST_PYRAMID' : 'SS52_ZANGER_PYRAMID', sleeve: 'MAIN' })
       execLog.push(`PYRAMID ${pos.ticker}`)
     }
@@ -493,7 +505,7 @@ export function runEngine(input: EngineInput): EngineOutput {
         if (!beast && sleeve > 0 && clusterNotional + filled > R.CLUSTER_MAX_NOTIONAL_PCT * sleeve) { rej('clusterNotional'); continue }
 
         const band = beast ? R.ss58BandLine(q.price, atr) : undefined
-        positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector, stopLevel: initStop, targetPrice: target, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: false, entrySignal: sigName, maxFavorable: 0, weakSince: 0, pivot: zPivot, pyramids: 0, isZanger: sigName.startsWith('SS52'), frozenStop: initStop, benchExtended: false, bandLine: band, sellLine: band, escalated: false, escUsed: false, escDeadline: 0, floorTouchedAt: 0 })
+        positions.push({ ticker: sym, shares, entryShares: shares, avgPrice: q.price, currentPrice: q.price, value: filled, pnl: 0, pnlPct: 0, sector, stopLevel: initStop, fillPrice: q.price, targetPrice: target, highWatermark: q.price, partialDone: false, entryTime: Date.now(), bars: b.slice(-20), isSafe: false, entrySignal: sigName, maxFavorable: 0, weakSince: 0, pivot: zPivot, pyramids: 0, isZanger: sigName.startsWith('SS52'), frozenStop: initStop, benchExtended: false, bandLine: band, sellLine: band, escalated: false, escUsed: false, escDeadline: 0, floorTouchedAt: 0 })
         cash -= filled; deployed += filled; openRisk += riskOnNew
         refs.fkStrike[sym] = (refs.fkStrike[sym] ?? 0) + 1
         if (refs.fkStrike[sym] >= R.SS59B_STRIKES && R.ss59DownOnly(b)) {
@@ -617,6 +629,21 @@ export function runEngine(input: EngineInput): EngineOutput {
     : noNewEntry ? 'NO NEW ENTRIES (EOD)'
     : defensiveMode ? 'DEFENSIVE — WEAK TAPE'
     : session === 'regular' ? 'DAY TRADING' : session.toUpperCase()
+
+  /* H10 GUARD (Line Law): for every open position the stop may (a) never sit
+     below the frozen stop set at entry and (b) never step down from where it
+     started this tick. Every update above already ratchets with max(), so this
+     should never fire. If it ever does, it clamps the stop back up and logs
+     DEFECT_H10 so the bug is loud instead of silently costing money. */
+  const startStop = new Map(cp.positions.map(p => [`${p.ticker}|${p.entryTime}`, p.stopLevel]))
+  positions = positions.map(p => {
+    const floor = Math.max(p.frozenStop ?? 0, startStop.get(`${p.ticker}|${p.entryTime}`) ?? 0)
+    if (p.stopLevel < floor - 1e-9) {
+      execLog.push(`DEFECT_H10 ${p.ticker}: stop $${p.stopLevel.toFixed(4)} below ${p.stopLevel < (p.frozenStop ?? 0) - 1e-9 ? 'frozen' : 'prior'} $${floor.toFixed(4)}, clamped up`)
+      return { ...p, stopLevel: floor }
+    }
+    return p
+  })
 
   const state: PortfolioState = {
     ...cp,

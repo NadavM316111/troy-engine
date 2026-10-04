@@ -239,7 +239,7 @@ export interface SS37Result {
 
 export function ss37Tick(pos: Position, price: number): SS37Result {
   const entry = pos.avgPrice, peak = Math.max(pos.highWatermark, price)
-  let stop = pos.stopLevel
+  let stop = Math.max(pos.stopLevel, pos.frozenStop ?? 0)   // H10: never evaluate below the frozen stop
   const hardStop = entry * 0.97
   if (price >= entry * 1.05) stop = Math.max(stop, entry)
   if (pos.partialDone)       stop = Math.max(stop, peak * 0.96)

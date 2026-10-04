@@ -122,6 +122,7 @@ interface Result {
   greenPct: number; exposurePct: number
   byEntry: (Score & { sig: string })[]; byExit: (Score & { sig: string })[]
   rejects: [string, number][]; trades: any[]
+  h10: { checks: number; belowFrozen: number; steppedDown: number; examples: string[] }
 }
 
 async function simulate(label: string, over: [string, string][]): Promise<Result> {
@@ -136,6 +137,12 @@ async function simulate(label: string, over: [string, string][]): Promise<Result
   const eq: number[] = []
   const entryOf: Record<string, string> = {}
   let expoSum = 0, expoN = 0
+  /* H10 property check: on every tick, for every open position, the stop must
+     (a) never be below the frozen stop set at entry, and (b) never move down
+     while the position is open. Keyed by ticker + entry time so a re-entry
+     starts fresh. */
+  const h10 = { checks: 0, belowFrozen: 0, steppedDown: 0, examples: [] as string[] }
+  const lastStop = new Map<string, number>()
 
   try {
     for (let di = 1; di < days.length; di++) {
@@ -180,6 +187,13 @@ async function simulate(label: string, over: [string, string][]): Promise<Result
         }
         const out = runEngine({ state, refs, quotes, bars, session, etMin: m })
         state = out.state; refs = out.refs
+        for (const p of state.positions) {
+          const k = `${p.ticker}|${p.entryTime}`, prev = lastStop.get(k)
+          h10.checks++
+          if (p.frozenStop != null && p.stopLevel < p.frozenStop - 1e-9) { h10.belowFrozen++; if (h10.examples.length < 5) h10.examples.push(`${p.ticker} d${d} ${m}: stop ${p.stopLevel} < frozen ${p.frozenStop}`) }
+          if (prev != null && p.stopLevel < prev - 1e-9) { h10.steppedDown++; if (h10.examples.length < 5) h10.examples.push(`${p.ticker} d${d} ${m}: stop fell ${prev} -> ${p.stopLevel}`) }
+          lastStop.set(k, p.stopLevel)
+        }
         for (const [r, n] of Object.entries(out.rejects as Record<string, number>)) rejects[r] = (rejects[r] ?? 0) + n
         for (const t of out.newTrades as Trade[]) {
           if (t.action === 'BUY' && !/PYRAMID/.test(t.signal ?? '')) entryOf[t.ticker] = t.signal ?? 'UNKNOWN'
@@ -219,7 +233,7 @@ async function simulate(label: string, over: [string, string][]): Promise<Result
     exposurePct: +(100 * expoSum / Math.max(1, expoN)).toFixed(1),
     byEntry: group('entrySignal'), byExit: group('signal'),
     rejects: Object.entries(rejects).sort((a, b) => b[1] - a[1]).slice(0, 12),
-    trades,
+    trades, h10,
   }
 }
 
@@ -241,6 +255,8 @@ function detail(r: Result) {
   }
   tbl('by ENTRY signal (worst first)', r.byEntry)
   tbl('by EXIT reason (worst first)', r.byExit)
+  const h = r.h10
+  console.log(`\n  H10 check (stop never below frozen, never steps down): ${h.checks} position-ticks, ${h.belowFrozen} below frozen, ${h.steppedDown} stepped down -> ${h.belowFrozen + h.steppedDown === 0 ? 'PASS' : 'FAIL'}${h.examples.length ? '\n    ' + h.examples.join('\n    ') : ''}`)
   console.log(`\n  top entry rejections: ${r.rejects.map(([k, v]) => `${k}=${v}`).join('  ')}`)
 }
 
