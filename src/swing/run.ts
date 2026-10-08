@@ -26,7 +26,7 @@ let busy = false
 
 async function loadUniverse(range: string): Promise<{ S: Record<string, DSeries>; raw: Record<string, LiveDaily>; failed: string[] }> {
   const S: Record<string, DSeries> = {}, raw: Record<string, LiveDaily> = {}, failed: string[] = []
-  for (const sym of ['SPY', ...SWING_UNIVERSE]) {
+  for (const sym of ['SPY', ...SWING_UNIVERSE, 'BTC-USD']) {
     const d = await fetchLiveDaily(sym, range)
     if (d && d.bars.length) { raw[sym] = d; S[sym] = buildSeries(d.bars) } else failed.push(sym)
     await new Promise(r => setTimeout(r, 80))
@@ -45,14 +45,22 @@ function applySplits(book: SwingBook, raw: Record<string, LiveDaily>) {
   }
 }
 
-const BOOKS = Object.keys(PROFILES) as ProfileId[]
+/* One live book. COMBO and HIGHWIN stay in the database as history only. */
+const BOOKS: ProfileId[] = ['TROY']
 async function users() {
   const us = await activeUsers()
   return us.map(u => ({ id: u.user_id, email: u.email, budget: u.state.budget || 1_000_000 }))
 }
 async function allBooks(us: Awaited<ReturnType<typeof users>>) {
   const out: { u: typeof us[number]; profile: ProfileId; book: SwingBook | null }[] = []
-  for (const u of us) for (const profile of BOOKS) out.push({ u, profile, book: await loadBook(u.id, profile) })
+  for (const u of us) for (const profile of BOOKS) {
+    let book = await loadBook(u.id, profile)
+    if (!book && profile === 'TROY') {
+      const combo = await loadBook(u.id, 'COMBO')
+      if (combo) { book = { ...combo, profile: 'TROY', btc: null, interest: 0, pending: null, lastDecisionDay: 0 }; await saveBook(u.id, book); await log('info', `[${u.email}] TROY book created from the COMBO book (same positions, cash and history)`, undefined, u.id) }
+    }
+    out.push({ u, profile, book })
+  }
   return out
 }
 
@@ -74,10 +82,11 @@ export async function afterClose(force = false) {
       const book = b ?? newBook(u.budget, today, profile)
       if (book.lastDecisionDay >= today) continue
       applySplits(book, raw)
-      const p = decide(book, S, SWING_UNIVERSE, today)
+      const p = decide(book, S, SWING_UNIVERSE, today, {}, () => randomUUID())
+      if (p.closeFills?.length) { await insertTrades(u.id, profile, p.closeFills); p.closeFills = [] }
       book.equityHistory = [...book.equityHistory.filter(x => x.day !== today), { day: today, v: +book.equity.toFixed(2) }].slice(-600)
       await saveBook(u.id, book)
-      await log('info', `[${u.email}] ${profile} decided: equity $${book.equity.toFixed(0)}, ${book.positions.length} held, tomorrow sells ${p.exits.map(x => x.sym).join(',') || 'none'}, buys ${p.entries.map(x => `${x.sym}(${x.leg})`).join(',') || 'none'}`, undefined, u.id)
+      await log('info', `[${u.email}] ${profile} decided: equity $${book.equity.toFixed(0)}, ${book.positions.length} held${book.btc ? ' + BTC' : ''}, tomorrow sells ${p.exits.map(x => x.sym).join(',') || 'none'}, buys ${p.entries.map(x => `${x.sym}(${x.leg})`).join(',') || 'none'}${p.btc ? `, BTC to $${p.btc.targetValue.toFixed(0)}` : ''}`, undefined, u.id)
     }
   } catch (e: any) {
     await log('error', 'swing afterClose failed', { err: String(e?.stack ?? e) })
@@ -98,7 +107,9 @@ export async function atOpen(force = false) {
     if (!spy || spy.days[spy.days.length - 1] !== today) { await log('info', `swing: no bar for today (${today}) yet or market closed, holding orders`); return }
     for (const { u, profile, book } of books) {
       applySplits(book!, raw)
-      const fills = execute(book!, S, today, () => randomUUID())
+      const b = S['BTC-USD']
+      const btcNow = b ? b.fc[b.days.length - 1] : undefined
+      const fills = execute(book!, S, today, () => randomUUID(), { btcFillPx: btcNow })
       book!.equity = markEquity(book!, S, today)
       await insertTrades(u.id, profile, fills)
       await saveBook(u.id, book!)

@@ -12,7 +12,7 @@ import { STOCK_LIBRARY } from '../rules.js'
 import { buildSeries, decide, execute, markEquity, newBook, PROFILES, type DSeries, type SwingTrade, type ProfileId } from '../swing/core.js'
 
 // The research rows each book must match (full universe, 5bp per side).
-const RESEARCH: Record<ProfileId, { src: string; trades: number; win: number; cagr: number; sharpe: number; mdd: number }> = {
+const RESEARCH: Partial<Record<ProfileId, { src: string; trades: number; win: number; cagr: number; sharpe: number; mdd: number }>> = {
   COMBO:   { src: 'q:swing "Combo: breakout + RSI2 dips"', trades: 1011, win: 52.3, cagr: 27.3, sharpe: 1.30, mdd: 22 },
   HIGHWIN: { src: 'q:winrate "RSI2<5, exit any close above entry"', trades: 2000, win: 75.9, cagr: 9.6, sharpe: 0.87, mdd: 19 },
 }
@@ -25,7 +25,7 @@ const dates = S['SPY'].days
 const START = 210
 let allOk = true
 
-for (const id of Object.keys(PROFILES) as ProfileId[]) {
+for (const id of Object.keys(RESEARCH) as ProfileId[]) {
   let n = 0
   const book = newBook(1_000_000, dates[START], id)
   const trades: SwingTrade[] = []
@@ -46,7 +46,7 @@ for (const id of Object.keys(PROFILES) as ProfileId[]) {
   const cagr = 100 * (Math.pow(eq[eq.length - 1] / eq[0], 252 / (eq.length - 1)) - 1)
   let pk = eq[0], mdd = 0; for (const v of eq) { pk = Math.max(pk, v); mdd = Math.max(mdd, 1 - v / pk) }
   const live = { trades: sells.length, win: +win.toFixed(1), cagr: +cagr.toFixed(1), sharpe: +((mu / sd) * Math.sqrt(252)).toFixed(2), mdd: +(mdd * 100).toFixed(0) }
-  const R = RESEARCH[id]
+  const R = RESEARCH[id]!
   console.log(`\n${PROFILES[id].title}  (live code vs ${R.src})`)
   console.log(`${''.padEnd(14)}${'live code'.padStart(12)}${'research'.padStart(12)}`)
   for (const [k, a, b, u] of [['trades', live.trades, R.trades, ''], ['win rate', live.win, R.win, '%'], ['CAGR', live.cagr, R.cagr, '%'], ['Sharpe', live.sharpe, R.sharpe, ''], ['max drawdown', live.mdd, R.mdd, '%']] as [string, number, number, string][])

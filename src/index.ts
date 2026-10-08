@@ -23,6 +23,11 @@ import { randomUUID } from 'node:crypto'
 import { runEngine } from './engine.js'
 import { getQuotes, getMarketSession, etMinutesNow, etDayKey, etParts } from './quotes.js'
 import { sendDailyEmails } from './email.js'
+import { sendTroyEmails } from './swing/email.js'
+
+/* One book. The intraday engine is off unless TROY_INTRADAY=on is set in Railway.
+   Its code stays, so it can be switched back on without a deploy. */
+const INTRADAY_ENABLED = process.env.TROY_INTRADAY === 'on'
 import {
   activeUsers, loadRefs, saveUserTick, loadBars, saveBars, clearBars,
   claimLock, heartbeat, log,
@@ -199,7 +204,11 @@ async function main() {
 
   const tz = { timezone: 'America/New_York' }
   // Daily report at 16:40 ET, after the 16:30 self-reflection, so the email shows today's.
-  cron.schedule('40 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, tz)
+  if (INTRADAY_ENABLED) cron.schedule('40 16 * * 1-5', () => { sendDailyEmails().catch(e => log('error', 'email job failed', { err: String(e) })) }, tz)
+  // The TROY email: after the 16:20 decision, retried until 19:55 (sends once a day)
+  const emailGuard = async () => { try { if (await claimLock(HOLDER)) await sendTroyEmails() } catch (e: any) { await log('error', 'TROY email job failed', { err: String(e?.stack ?? e) }) } }
+  cron.schedule('40,55 16 * * 1-5', emailGuard, tz)
+  cron.schedule('*/15 17-19 * * 1-5', emailGuard, tz)
   /* Swing book. Decide after the close, fill at the next open. The retries
      make a missed run (restart, slow data) self-heal; both jobs are no-ops
      once they have done today's work, and only the lock holder runs them. */
@@ -209,12 +218,14 @@ async function main() {
   cron.schedule('35,45,55 9 * * 1-5', swingGuard(swingAtOpen), tz)
   cron.schedule('*/10 10-11 * * 1-5', swingGuard(swingAtOpen), tz)
   // On boot, catch up anything a restart may have skipped.
-  swingGuard(swingAtOpen)().then(swingGuard(swingAfterClose))
+  swingGuard(swingAtOpen)().then(swingGuard(swingAfterClose)).then(emailGuard)
 
-  cron.schedule('30 9 * * 1-5',  () => { checkpoint('09:30') }, tz)
-  cron.schedule('30 11 * * 1-5', () => { checkpoint('11:30') }, tz)
-  cron.schedule('0 14 * * 1-5',  () => { checkpoint('14:00') }, tz)
-  cron.schedule('0 16 * * 1-5',  () => { checkpoint('16:00') }, tz)
+  if (INTRADAY_ENABLED) {
+    cron.schedule('30 9 * * 1-5',  () => { checkpoint('09:30') }, tz)
+    cron.schedule('30 11 * * 1-5', () => { checkpoint('11:30') }, tz)
+    cron.schedule('0 14 * * 1-5',  () => { checkpoint('14:00') }, tz)
+    cron.schedule('0 16 * * 1-5',  () => { checkpoint('16:00') }, tz)
+  }
 
   /* Ticks can now be minutes or hours apart, longer than the 90s lock window.
      Heartbeat on its own clock so a second instance cannot grab the lock
@@ -223,7 +234,8 @@ async function main() {
 
   const loop = async () => {
     const { session } = getMarketSession()
-    if (session === 'closed') await nightScan(); else await tick()
+    if (!INTRADAY_ENABLED) { /* one-book mode: the swing jobs run on their own schedule */ }
+    else if (session === 'closed') await nightScan(); else await tick()
     setTimeout(loop, nextDelay())
   }
   loop()

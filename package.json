@@ -15,7 +15,12 @@
     "q:daily": "tsx src/quant/daily-fetch.ts",
     "q:swing": "tsx src/quant/swing.ts",
     "q:parity": "tsx src/quant/swing-parity.ts",
-    "q:winrate": "tsx src/quant/winrate.ts"
+    "q:winrate": "tsx src/quant/winrate.ts",
+    "q:frontier": "tsx src/quant/frontier.ts",
+    "q:edge": "tsx src/quant/edge.ts",
+    "q:sp500": "tsx src/quant/sp500-fetch.ts",
+    "q:sharpe": "tsx src/quant/sharpe.ts",
+    "q:final": "tsx src/quant/final.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
