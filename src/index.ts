@@ -219,6 +219,10 @@ async function main() {
   cron.schedule('*/10 10-11 * * 1-5', swingGuard(swingAtOpen), tz)
   // On boot, catch up anything a restart may have skipped.
   swingGuard(swingAtOpen)().then(swingGuard(swingAfterClose)).then(emailGuard)
+    .then(swingGuard(async () => { const { auditAll } = await import('./swing/audit.js'); await auditAll() }))
+  // A deploy briefly overlaps with the old instance, which can still hold the lock at boot.
+  // Run the audit again once the old one is gone, so a fresh deploy always reports.
+  setTimeout(swingGuard(async () => { const { auditAll } = await import('./swing/audit.js'); await auditAll() }), 150 * 1000)
 
   if (INTRADAY_ENABLED) {
     cron.schedule('30 9 * * 1-5',  () => { checkpoint('09:30') }, tz)

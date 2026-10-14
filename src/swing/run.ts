@@ -24,7 +24,7 @@ export const SWING_UNIVERSE = STOCK_LIBRARY.map(s => s.sym)
 let tablesReady = false
 let busy = false
 
-async function loadUniverse(range: string): Promise<{ S: Record<string, DSeries>; raw: Record<string, LiveDaily>; failed: string[] }> {
+export async function loadUniverse(range: string): Promise<{ S: Record<string, DSeries>; raw: Record<string, LiveDaily>; failed: string[] }> {
   const S: Record<string, DSeries> = {}, raw: Record<string, LiveDaily> = {}, failed: string[] = []
   for (const sym of ['SPY', ...SWING_UNIVERSE, 'BTC-USD']) {
     const d = await fetchLiveDaily(sym, range)
@@ -78,6 +78,7 @@ export async function afterClose(force = false) {
     const lastDay = spy.days[spy.days.length - 1]
     if (lastDay !== today) { await log('info', `swing: no bar for today (${today}), market closed, nothing to decide`); return }
     if (failed.length) await log('warn', `swing: ${failed.length} symbols failed daily fetch`, { failed })
+    let decidedAny = false
     for (const { u, profile, book: b } of books) {
       const book = b ?? newBook(u.budget, today, profile)
       if (book.lastDecisionDay >= today) continue
@@ -86,8 +87,10 @@ export async function afterClose(force = false) {
       if (p.closeFills?.length) { await insertTrades(u.id, profile, p.closeFills); p.closeFills = [] }
       book.equityHistory = [...book.equityHistory.filter(x => x.day !== today), { day: today, v: +book.equity.toFixed(2) }].slice(-600)
       await saveBook(u.id, book)
+      decidedAny = true
       await log('info', `[${u.email}] ${profile} decided: equity $${book.equity.toFixed(0)}, ${book.positions.length} held${book.btc ? ' + BTC' : ''}, tomorrow sells ${p.exits.map(x => x.sym).join(',') || 'none'}, buys ${p.entries.map(x => `${x.sym}(${x.leg})`).join(',') || 'none'}${p.btc ? `, BTC to $${p.btc.targetValue.toFixed(0)}` : ''}`, undefined, u.id)
     }
+    if (decidedAny) { const { auditAll } = await import('./audit.js'); await auditAll(S) }
   } catch (e: any) {
     await log('error', 'swing afterClose failed', { err: String(e?.stack ?? e) })
   } finally { busy = false }
