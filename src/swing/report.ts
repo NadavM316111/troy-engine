@@ -8,7 +8,8 @@ import { PROFILES, type ProfileId } from './core.js'
 export const EXPECTED: Record<ProfileId, { winRate: number; avgWinPct: number; avgLossPct: number; expPct: number; pf: number; cagrPct: number; tradesPerYear: number }> = {
   COMBO:   { winRate: 52.3, avgWinPct: 9.67, avgLossPct: -5.03, expPct: 2.56, pf: 2.04, cagrPct: 27.3, tradesPerYear: 111 },
   HIGHWIN: { winRate: 75.9, avgWinPct: 1.89, avgLossPct: -3.69, expPct: 0.44, pf: 1.48, cagrPct: 9.6, tradesPerYear: 220 },
-  TROY:    { winRate: 52, avgWinPct: 9.7, avgLossPct: -5.0, expPct: 2.5, pf: 2.0, cagrPct: 66, tradesPerYear: 130 },
+  // TROY = 1.6x + earnings drift 0.6x (quant/factsheet.ts, real engine, 2017-2026, all costs)
+  TROY:    { winRate: 54, avgWinPct: 10.0, avgLossPct: -5.6, expPct: 2.8, pf: 2.1, cagrPct: 71, tradesPerYear: 148 },
 }
 
 const money = (n: number) => `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -53,6 +54,7 @@ async function bookSection(userId: string, id: ProfileId): Promise<string> {
   const orders = pend ? [
     ...(pend.btc ? [`<li style="margin:3px 0"><b>${pend.btc.targetValue > 0 ? 'SET BTC to ' + money(pend.btc.targetValue) : 'SELL all BTC'}</b>: ${esc(pend.btc.why)}</li>`] : []),
     ...pend.exits.map(x => `<li style="margin:3px 0"><b>SELL ${esc(x.sym)}</b>: ${esc(x.reason)}</li>`),
+    ...(pend.partials ?? []).map(x => `<li style="margin:3px 0"><b>BANK 1/3 of ${esc(x.sym)}</b>: ${esc(x.reason)}</li>`),
     ...pend.entries.map(x => `<li style="margin:3px 0"><b>BUY ${esc(x.sym)}</b> (${x.leg}): ${esc(x.why)}</li>`),
   ].join('') : ''
   const sec = (t: string) => `<div style="font-size:11px;letter-spacing:.1em;color:#999;text-transform:uppercase;margin:16px 0 8px">${t}</div>`

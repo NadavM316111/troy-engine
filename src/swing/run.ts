@@ -16,7 +16,8 @@ import { randomUUID } from 'node:crypto'
 import { STOCK_LIBRARY } from '../rules.js'
 import { activeUsers, log } from '../db.js'
 import { etDayKey, etMinutesNow } from '../quotes.js'
-import { buildSeries, decide, execute, markEquity, newBook, PROFILES, type DSeries, type SwingBook, type ProfileId } from './core.js'
+import { buildSeries, decide, execute, markEquity, newBook, PROFILES, SECTOR_ETFS, setEarnings, type DSeries, type SwingBook, type ProfileId } from './core.js'
+import { loadLiveEarnings } from './earnings.js'
 import { fetchLiveDaily, type LiveDaily } from './data.js'
 import { ensureSwingTables, loadBook, saveBook, insertTrades } from './db.js'
 
@@ -26,7 +27,7 @@ let busy = false
 
 export async function loadUniverse(range: string): Promise<{ S: Record<string, DSeries>; raw: Record<string, LiveDaily>; failed: string[] }> {
   const S: Record<string, DSeries> = {}, raw: Record<string, LiveDaily> = {}, failed: string[] = []
-  for (const sym of ['SPY', ...SWING_UNIVERSE, 'BTC-USD']) {
+  for (const sym of [...new Set(['SPY', ...SWING_UNIVERSE, 'BTC-USD', ...SECTOR_ETFS])]) {
     const d = await fetchLiveDaily(sym, range)
     if (d && d.bars.length) { raw[sym] = d; S[sym] = buildSeries(d.bars) } else failed.push(sym)
     await new Promise(r => setTimeout(r, 80))
@@ -64,6 +65,26 @@ async function allBooks(us: Awaited<ReturnType<typeof users>>) {
   return out
 }
 
+/** Load SEC earnings reaction days for the EARN leg (no-op when it is off). Never throws. */
+export async function refreshEarnings(startDays: number[], tradingDays: number[], today: number) {
+  if (!PROFILES.TROY.earnDrift) return
+  try {
+    const since = Math.min(...startDays, today) - 45
+    const e = await loadLiveEarnings(SWING_UNIVERSE, tradingDays, today, since)
+    setEarnings(e.m)
+    await log('info', `earnings: ${e.releases} SEC earnings releases since ${new Date(since * 86400000).toISOString().slice(0, 10)} across ${Object.keys(e.m).length} stocks${e.failed.length ? `, ${e.failed.length} failed (${e.failed.join(' ')})` : ''}`)
+  } catch (err: any) {
+    await log('warn', 'earnings: SEC fetch failed, no new earnings-drift trades today', { err: String(err?.message ?? err) })
+  }
+}
+
+/** Record the TROY settings in force from today, when they change, so the audit replays history correctly. */
+function noteSettings(book: SwingBook, today: number) {
+  const P = PROFILES.TROY, cur = { leverage: P.leverage ?? 1, earn: P.earnDrift?.weight ?? 0 }
+  const last = book.settings?.at(-1)
+  if (!last || last.leverage !== cur.leverage || last.earn !== cur.earn) book.settings = [...(book.settings ?? []).filter(x => x.day !== today), { day: today, ...cur }]
+}
+
 export async function afterClose(force = false) {
   if (busy) return; busy = true
   try {
@@ -78,11 +99,13 @@ export async function afterClose(force = false) {
     const lastDay = spy.days[spy.days.length - 1]
     if (lastDay !== today) { await log('info', `swing: no bar for today (${today}), market closed, nothing to decide`); return }
     if (failed.length) await log('warn', `swing: ${failed.length} symbols failed daily fetch`, { failed })
+    await refreshEarnings(books.map(b => b.book?.startedDay ?? today), spy.days, today)
     let decidedAny = false
     for (const { u, profile, book: b } of books) {
       const book = b ?? newBook(u.budget, today, profile)
       if (book.lastDecisionDay >= today) continue
       applySplits(book, raw)
+      if (profile === 'TROY') noteSettings(book, today)
       const p = decide(book, S, SWING_UNIVERSE, today, {}, () => randomUUID())
       if (p.closeFills?.length) { await insertTrades(u.id, profile, p.closeFills); p.closeFills = [] }
       book.equityHistory = [...book.equityHistory.filter(x => x.day !== today), { day: today, v: +book.equity.toFixed(2) }].slice(-600)
