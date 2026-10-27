@@ -72,6 +72,11 @@ export interface Profile {
      split into `slots` equal positions, on top of the stock and Bitcoin sleeves.
      Needs earnings reaction days loaded with setEarnings(). */
   earnDrift?: { jump: number; hold: number; weight: number; slots: number }
+  /* Stock/Bitcoin tilt (off unless set): move Bitcoin's share between lo and hi depending on
+     which side is trending. 'rel63' / 'rel21': Bitcoin's 63- or 21-day return vs SPY's;
+     'trend': each side's own trend (above its 50-day average with a positive 20-day return),
+     lo when only stocks trend, hi when only Bitcoin trends, the normal share otherwise. */
+  btcTilt?: { mode: 'rel63' | 'rel21' | 'trend'; lo: number; hi: number }
   breakoutRank?: 'ret20' | 'high52' | 'rs'
   breakoutAtrK?: number
 }
@@ -213,6 +218,10 @@ export interface SwingBook {
   settings?: { day: number; leverage: number; earn: number }[]
   /** every "since start" reset: the day and the round value the book was set to, so the audit can replay them */
   resets?: { day: number; budget: number }[]
+  /** the email's scorecard counts closed trades from this day on (default: the day after the start) */
+  scoreFrom?: number
+  /** today's profit or loss split by part of the book, for the email */
+  sleeves?: { day: number; startedDay: number; interest: number; vals: { stocks: number; earn: number; btc: number }; pnl: { stocks: number; earn: number; btc: number; interest: number } | null }
   tomStopsSince?: number
 }
 export function newBook(budget: number, day: number, profile: ProfileId = 'COMBO'): SwingBook {
@@ -273,6 +282,14 @@ export function decide(book: SwingBook, S: Record<string, DSeries>, universe: st
     const b = S[prof.btcSym], q = S['QQQ']
     const vb = vol60(b, lastIdx(b, opts.btcDay ?? day)), vq = vol60(q, lastIdx(q, day))
     if (ok(vb) && ok(vq) && vb > 0) w = Math.min(0.45, Math.max(0.10, w * (vq / vb) / (0.22 / 0.60)))
+  }
+  if (w > 0 && prof.btcTilt && prof.btcSym && S[prof.btcSym] && S['SPY']) {
+    const b = S[prof.btcSym], q = S['SPY'], kb = lastIdx(b, opts.btcDay ?? day), kq = lastIdx(q, day)
+    const ret = (s: DSeries, k: number, n: number) => k >= n ? s.c[k] / s.c[k - n] - 1 : NaN
+    const up = (s: DSeries, k: number) => { if (k < 50) return false; let m = 0; for (let j = k - 49; j <= k; j++) m += s.c[j]; return s.c[k] > m / 50 && ret(s, k, 20) > 0 }
+    const t = prof.btcTilt
+    if (t.mode === 'trend') { const su = up(q, kq), bu = up(b, kb); if (su && !bu) w = t.lo; else if (bu && !su) w = t.hi }
+    else { const n = t.mode === 'rel63' ? 63 : 21; const rb = ret(b, kb, n), rs = ret(q, kq, n); if (ok(rb) && ok(rs)) w = rb > rs ? t.hi : t.lo }
   }
   // a day's interest on cash: earned when positive, paid when borrowing
   if (prof.cashRate !== undefined && book.lastDecisionDay > 0 && day > book.lastDecisionDay) {

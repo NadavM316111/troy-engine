@@ -18,6 +18,7 @@ import { activeUsers, log } from '../db.js'
 import { etDayKey, etMinutesNow } from '../quotes.js'
 import { buildSeries, decide, execute, markEquity, newBook, PROFILES, SECTOR_ETFS, setEarnings, type DSeries, type SwingBook, type ProfileId } from './core.js'
 import { loadLiveEarnings } from './earnings.js'
+import { swingTrades } from './db.js'
 import { fetchLiveDaily, type LiveDaily } from './data.js'
 import { ensureSwingTables, loadBook, saveBook, insertTrades } from './db.js'
 
@@ -78,6 +79,28 @@ export async function refreshEarnings(startDays: number[], tradingDays: number[]
   }
 }
 
+/** Today's profit or loss by part of the book (stocks, earnings drift, Bitcoin, interest), for the email. */
+async function noteSleeves(userId: string, profile: string, book: SwingBook, today: number) {
+  try {
+    const vals = { stocks: 0, earn: 0, btc: 0 }
+    for (const p of book.positions) vals[p.leg === 'EARN' ? 'earn' : 'stocks'] += p.shares * (p.lastPx ?? p.entryPx)
+    vals.btc = book.btc ? book.btc.units * (book.btc.lastPx ?? book.btc.avgPx) : 0
+    const flows = { stocks: 0, earn: 0, btc: 0 }
+    for (const t of (await swingTrades(userId, profile)).filter((x: any) => Number(x.day) === today)) {
+      const k = t.leg === 'BTC' ? 'btc' : t.leg === 'EARN' ? 'earn' : 'stocks'
+      flows[k] += t.action === 'SELL' ? Number(t.total) : -Number(t.total)
+    }
+    const prev = book.sleeves, interest = book.interest ?? 0
+    const pnl = prev && prev.day < today ? {
+      stocks: vals.stocks - prev.vals.stocks + flows.stocks,
+      earn: vals.earn - prev.vals.earn + flows.earn,
+      btc: vals.btc - prev.vals.btc + flows.btc,
+      interest: prev.startedDay === book.startedDay ? interest - prev.interest : interest,
+    } : prev?.day === today ? prev.pnl : null
+    book.sleeves = { day: today, startedDay: book.startedDay, interest, vals, pnl }
+  } catch { /* the split is a nice-to-have; never block the decision */ }
+}
+
 /** Record the TROY settings in force from today, when they change, so the audit replays history correctly. */
 function noteSettings(book: SwingBook, today: number) {
   const P = PROFILES.TROY, cur = { leverage: P.leverage ?? 1, earn: P.earnDrift?.weight ?? 0 }
@@ -107,6 +130,7 @@ export async function afterClose(force = false) {
       applySplits(book, raw)
       if (profile === 'TROY') noteSettings(book, today)
       const p = decide(book, S, SWING_UNIVERSE, today, {}, () => randomUUID())
+      await noteSleeves(u.id, profile, book, today)
       if (p.closeFills?.length) { await insertTrades(u.id, profile, p.closeFills); p.closeFills = [] }
       book.equityHistory = [...book.equityHistory.filter(x => x.day !== today), { day: today, v: +book.equity.toFixed(2) }].slice(-600)
       await saveBook(u.id, book)

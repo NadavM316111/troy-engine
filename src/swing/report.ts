@@ -28,7 +28,8 @@ async function bookSection(userId: string, id: ProfileId): Promise<string> {
   if (!book) return ''
   const trades = await swingTrades(userId, id)
   const today = etDayKey()
-  const sells = trades.filter((t: any) => t.action === 'SELL' && t.pnl != null && !String(t.reason ?? '').startsWith('trim'))
+  const scoreFrom = book.scoreFrom ?? book.startedDay + 1
+  const sells = trades.filter((t: any) => t.action === 'SELL' && t.pnl != null && !String(t.reason ?? '').startsWith('trim') && Number(t.day) >= scoreFrom)
   const w = sells.filter((t: any) => Number(t.net) > 0), l = sells.filter((t: any) => Number(t.net) <= 0)
   const mean = (a: number[]) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0
   const gw = sells.filter((t: any) => Number(t.pnl) > 0).reduce((a: number, t: any) => a + Number(t.pnl), 0)
@@ -63,6 +64,7 @@ async function bookSection(userId: string, id: ProfileId): Promise<string> {
     <div style="font-size:11px;letter-spacing:.12em;color:#999;text-transform:uppercase">${esc(PROFILES[id].title)} · started ${label(book.startedDay)}</div>
     <div style="font-size:26px;font-weight:600;margin-top:6px">${money(book.equity)}</div>
     <div style="font-size:14px;margin-top:2px;color:${dayChg >= 0 ? '#2d7a4f' : '#c0392b'}">${money(dayChg)} today · <span style="color:${total >= 0 ? '#2d7a4f' : '#c0392b'}">${money(total)} (${pct(100 * total / book.budget)}) since start</span></div>
+    ${(() => { const s = book.sleeves; if (!s || s.day !== today || !s.pnl) return ''; const part = (n: string, v: number) => `${n} <span style="color:${v >= 0 ? '#2d7a4f' : '#c0392b'}">${money(v)}</span>`; return `<div style="font-size:12px;color:#666;margin-top:4px">Today by part: ${part('stocks', s.pnl.stocks)} · ${part('earnings drift', s.pnl.earn)} · ${part('Bitcoin', s.pnl.btc)} · ${part('interest', s.pnl.interest)}</div>` })()}
     <div style="font-size:12px;color:#666;margin-top:6px">${book.positions.length} stocks${book.btc ? ' + Bitcoin' : ''} · cash ${money(book.cash)}${book.cash < 0 ? ' (borrowed)' : ''} · leverage ${(((book.positions.reduce((a, p) => a + p.shares * (p.lastPx ?? p.entryPx), 0) + (book.btc ? book.btc.units * (book.btc.lastPx ?? book.btc.avgPx) : 0)) / Math.max(1, book.equity))).toFixed(2)}x · interest ${money(book.interest ?? 0)} · max drawdown so far ${(mdd * 100).toFixed(1)}%</div>
     ${(() => {
       const a = (book as any).audit; if (!a) return ''
@@ -76,7 +78,7 @@ async function bookSection(userId: string, id: ProfileId): Promise<string> {
           : `${a.matched} of ${a.total} trades match; orders ${a.ordersMatch ? 'match' : 'differ'}${a.missing?.length ? `, ${a.missing.length} expected trade(s) missing` : ''}${a.extra?.length ? `, ${a.extra.length} unexpected trade(s)` : ''}; book value ${a.equityDiffPct}% from the replay. This points to a bug. Check the logs for AUDIT MISMATCH.`
       return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;background:${tone.bg};color:${tone.fg}"><b>${head}:</b> ${body}</div>`
     })()}
-    ${sec('Scorecard vs backtest')}
+    ${sec(`Scorecard vs backtest · trades closed since ${label(scoreFrom)}`)}
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <tr><td style="${td};color:#999"></td><td style="${tdr};color:#999">Live</td><td style="${tdr};color:#999">Backtest</td></tr>
       <tr><td style="${td}">Growth per year</td><td style="${tdr}">-</td><td style="${tdr}">${E.cagrPct}%</td></tr>
