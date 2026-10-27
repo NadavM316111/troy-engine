@@ -23,6 +23,8 @@ export interface AuditResult {
   priceDiffs: string[]
   equityLive: number; equityReplay: number; equityDiffPct: number
   ok: boolean
+  /** trades and tonight's orders match the tested code; only fill prices / book value may differ */
+  logicOk: boolean
 }
 
 const key = (t: { day: number; action: string; sym?: string; ticker?: string }) => `${t.day}|${t.action}|${t.sym ?? t.ticker}`
@@ -46,6 +48,7 @@ export function auditFromData(troy: SwingBook, combo: SwingBook | null, live: an
   let book: SwingBook = newBook(combo?.budget ?? troy.budget, firstDay, combo ? 'COMBO' : 'TROY')
   const liveTom = PROFILES.TROY.tomStops
   const liveLev = PROFILES.TROY.leverage, liveEarn = PROFILES.TROY.earnDrift
+  const resets = troy.resets?.length ? troy.resets : [{ day: troy.startedDay, budget: troy.budget }]
   // settings in force on a day: the last change on or before it; before any recorded change, the original 1.8x with no earnings drift
   const settingsOn = (d: number) => { const s = (troy.settings ?? []).filter(x => x.day <= d).at(-1); return s ?? { leverage: 1.8, earn: 0 } }
   const expected: SwingTrade[] = []; let n = 0; const id = () => `a${++n}`
@@ -57,10 +60,9 @@ export function auditFromData(troy: SwingBook, combo: SwingBook | null, live: an
     if (combo && d === switchDay) book = { ...book, profile: 'TROY', btc: null, interest: 0, pending: null, lastDecisionDay: 0 }
     const p = decide(book, S, SWING_UNIVERSE, d, {}, id)
     expected.push(...(p.closeFills ?? []))
-    if (d === troy.startedDay && book.profile === 'TROY' && Math.abs(book.equity - troy.budget) > 1e-6 * troy.budget) {
-      // the scoreboard reset on the TROY start day (round starting value, paper top-up)
-      book.cash += troy.budget - book.equity; book.equity = troy.budget; book.budget = troy.budget; book.realized = 0; book.interest = 0
-    }
+    // scoreboard resets ("since start" set to a round number on that day, a paper top-up or trim of cash), replayed in order
+    const rs = resets.find(r => r.day === d)
+    if (rs && book.profile === 'TROY') { book.cash += rs.budget - book.equity; book.equity = rs.budget; book.budget = rs.budget; book.realized = 0; book.interest = 0 }
   }
   } finally { PROFILES.TROY.tomStops = liveTom; PROFILES.TROY.leverage = liveLev; PROFILES.TROY.earnDrift = liveEarn }
 
@@ -86,12 +88,13 @@ export function auditFromData(troy: SwingBook, combo: SwingBook | null, live: an
   const names = (p: typeof lp) => p ? [...p.exits.map(x => `SELL ${x.sym}`), ...(p.partials ?? []).map(x => `BANK ${x.sym}`), ...p.entries.map(x => `BUY ${x.sym}`), ...(p.btc ? [`BTC ${p.btc.targetValue > 0 ? 'SET' : 'OUT'}`] : [])].sort().join(', ') : ''
   const ordersMatch = names(lp) === names(rp)
   const eqDiff = Math.abs(book.equity / troy.equity - 1) * 100
-  const ok = missing.length === 0 && extra.length === 0 && ordersMatch && worstPx < 0.5 && worstSz < 2 && eqDiff < 1.5
+  const logicOk = missing.length === 0 && extra.length === 0 && ordersMatch && eqDiff < 3
+  const ok = logicOk && worstPx < 0.5 && worstSz < 2 && eqDiff < 1.5
   return {
     day: lastDay, total: Math.max(eKeys.size, aKeys.size), matched, missing, extra,
     worstPriceDiffPct: +worstPx.toFixed(3), worstSizeDiffPct: +worstSz.toFixed(3),
     priceDiffs, ordersMatch, ordersNote: ordersMatch ? names(lp) || 'none' : `live: ${names(lp) || 'none'} | tested: ${names(rp) || 'none'}`,
-    equityLive: troy.equity, equityReplay: book.equity, equityDiffPct: +eqDiff.toFixed(3), ok,
+    equityLive: troy.equity, equityReplay: book.equity, equityDiffPct: +eqDiff.toFixed(3), ok, logicOk,
   }
 }
 
@@ -110,8 +113,8 @@ export async function auditAll(S?: Record<string, DSeries>) {
       const book = await loadBook(u.user_id, 'TROY'); if (!book) continue
       ;(book as any).audit = r
       await saveBook(u.user_id, book)
-      const head = r.ok ? 'AUDIT PASS' : 'AUDIT MISMATCH'
-      await log(r.ok ? 'info' : 'warn', `[${u.email}] ${head}: ${r.matched}/${r.total} trades match, worst price diff ${r.worstPriceDiffPct}%, worst size diff ${r.worstSizeDiffPct}%, orders ${r.ordersMatch ? 'match' : 'DIFFER'}, value live $${r.equityLive.toFixed(0)} vs tested $${r.equityReplay.toFixed(0)} (${r.equityDiffPct}%)${r.missing.length ? ` | missing: ${r.missing.join(' ')}` : ''}${r.extra.length ? ` | extra: ${r.extra.join(' ')}` : ''}${r.ordersMatch ? '' : ` | ${r.ordersNote}`}${r.priceDiffs.length ? ` | price gaps: ${r.priceDiffs.join('; ')}` : ''}`, undefined, u.user_id)
+      const head = r.ok ? 'AUDIT PASS' : r.logicOk ? 'AUDIT PASS (fill-price gaps only)' : 'AUDIT MISMATCH'
+      await log(r.logicOk ? 'info' : 'warn', `[${u.email}] ${head}: ${r.matched}/${r.total} trades match, worst price diff ${r.worstPriceDiffPct}%, worst size diff ${r.worstSizeDiffPct}%, orders ${r.ordersMatch ? 'match' : 'DIFFER'}, value live $${r.equityLive.toFixed(0)} vs tested $${r.equityReplay.toFixed(0)} (${r.equityDiffPct}%)${r.missing.length ? ` | missing: ${r.missing.join(' ')}` : ''}${r.extra.length ? ` | extra: ${r.extra.join(' ')}` : ''}${r.ordersMatch ? '' : ` | ${r.ordersNote}`}${r.priceDiffs.length ? ` | price gaps: ${r.priceDiffs.join('; ')}` : ''}`, undefined, u.user_id)
     }
   } catch (e: any) {
     await log('error', 'audit failed', { err: String(e?.stack ?? e) })

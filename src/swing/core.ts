@@ -211,6 +211,8 @@ export interface SwingBook {
   lastEmailDay?: number
   /** TROY settings in force from each day on (leverage, earnings drift pool), so the audit can replay them */
   settings?: { day: number; leverage: number; earn: number }[]
+  /** every "since start" reset: the day and the round value the book was set to, so the audit can replay them */
+  resets?: { day: number; budget: number }[]
   tomStopsSince?: number
 }
 export function newBook(budget: number, day: number, profile: ProfileId = 'COMBO'): SwingBook {

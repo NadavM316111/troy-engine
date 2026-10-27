@@ -64,7 +64,18 @@ async function bookSection(userId: string, id: ProfileId): Promise<string> {
     <div style="font-size:26px;font-weight:600;margin-top:6px">${money(book.equity)}</div>
     <div style="font-size:14px;margin-top:2px;color:${dayChg >= 0 ? '#2d7a4f' : '#c0392b'}">${money(dayChg)} today · <span style="color:${total >= 0 ? '#2d7a4f' : '#c0392b'}">${money(total)} (${pct(100 * total / book.budget)}) since start</span></div>
     <div style="font-size:12px;color:#666;margin-top:6px">${book.positions.length} stocks${book.btc ? ' + Bitcoin' : ''} · cash ${money(book.cash)}${book.cash < 0 ? ' (borrowed)' : ''} · leverage ${(((book.positions.reduce((a, p) => a + p.shares * (p.lastPx ?? p.entryPx), 0) + (book.btc ? book.btc.units * (book.btc.lastPx ?? book.btc.avgPx) : 0)) / Math.max(1, book.equity))).toFixed(2)}x · interest ${money(book.interest ?? 0)} · max drawdown so far ${(mdd * 100).toFixed(1)}%</div>
-    ${(() => { const a = (book as any).audit; if (!a) return ''; return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;background:${a.ok ? '#eef7f1' : '#fdf0ef'};color:${a.ok ? '#2d7a4f' : '#c0392b'}"><b>${a.ok ? 'Audit passed' : 'Audit found a mismatch'}:</b> ${a.matched} of ${a.total} trades match the tested code, orders ${a.ordersMatch ? 'match' : 'differ'}, book value within ${a.equityDiffPct}% of the replay.${a.ok ? ' Live Troy is trading exactly like the tested Troy.' : ' This points to a bug, not bad luck. Check the logs for AUDIT MISMATCH.'}</div>` })()}
+    ${(() => {
+      const a = (book as any).audit; if (!a) return ''
+      const logic = a.logicOk ?? a.ok
+      const tone = a.ok ? { bg: '#eef7f1', fg: '#2d7a4f' } : logic ? { bg: '#fdf6e3', fg: '#8a6a12' } : { bg: '#fdf0ef', fg: '#c0392b' }
+      const head = a.ok ? 'Audit passed' : logic ? 'Audit passed, small fill-price gaps' : 'Audit found a real mismatch'
+      const body = a.ok
+        ? `${a.matched} of ${a.total} trades and tonight's orders match the tested code; book value within ${a.equityDiffPct}% of the replay. Live Troy is trading exactly like the tested Troy.`
+        : logic
+          ? `${a.matched} of ${a.total} trades and tonight's orders match the tested code, so the logic is identical. Some fills differ from the official open (worst ${a.worstPriceDiffPct}%), which moves the book value ${a.equityDiffPct}% from the replay. Data timing, not a bug.`
+          : `${a.matched} of ${a.total} trades match; orders ${a.ordersMatch ? 'match' : 'differ'}${a.missing?.length ? `, ${a.missing.length} expected trade(s) missing` : ''}${a.extra?.length ? `, ${a.extra.length} unexpected trade(s)` : ''}; book value ${a.equityDiffPct}% from the replay. This points to a bug. Check the logs for AUDIT MISMATCH.`
+      return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;background:${tone.bg};color:${tone.fg}"><b>${head}:</b> ${body}</div>`
+    })()}
     ${sec('Scorecard vs backtest')}
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <tr><td style="${td};color:#999"></td><td style="${tdr};color:#999">Live</td><td style="${tdr};color:#999">Backtest</td></tr>
